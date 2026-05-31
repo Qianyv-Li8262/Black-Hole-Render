@@ -55,7 +55,25 @@ float a = r*sqrtf(r);
 float b = sqrtf(1.0f+4.0f*r*r-8.0f*r);
 return 8.0f*a/b/(2.0f*r+1.0f)/(2.0f*r+1.0f);
 }
-
+__device__ __forceinline__ float3 KelvinToRgb(float Kelvin)
+{
+    if (Kelvin < 400.01f) return make_float3(0.0f, 0.0f, 0.0f);
+    
+    //Teef 转换公式
+    float Teff = (Kelvin - 6500.0f) / (6500.0f * Kelvin * 2.2f);
+    float3 RgbColor;
+    RgbColor.x = __expf(2.05539304e4f * Teff); // Red
+    RgbColor.y = __expf(2.63463675e4f * Teff); // Green
+    RgbColor.z = __expf(3.30145739e4f * Teff); // Blue
+    
+    float max_c = fmaxf(fmaxf(1.5f * RgbColor.x, RgbColor.y), RgbColor.z);
+    float BrightnessScale = 1.0f / max_c;
+    
+    if (Kelvin < 1000.0f) {
+        BrightnessScale *= (Kelvin - 400.0f) / 600.0f;
+    }
+    return RgbColor * BrightnessScale;
+}
 __device__ __forceinline__ unsigned int pcg_hash(unsigned int input) {
     unsigned int state = input * 747796405u + 2891336453u;
     unsigned int word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -166,13 +184,20 @@ __device__ float3 procedural_stars(float3 dir, int frames) {
 }
 
 
-__device__ float4 disk_emission(float temp,float intensity,cudaTextureObject_t lut_color) {
+__device__ float4 disk_emission_dep(float temp,float intensity,cudaTextureObject_t lut_color) {
 
 
     float4 color = tex2D<float4>(lut_color,(temp-510.0f)/20000.0f,0.5f);
 
 
 
+
+    return make_float4(color.x * intensity, color.y * intensity, color.z * intensity, 1.0f);
+}
+__device__ float4 disk_emission(float temp,float intensity) {
+
+
+    float3 color = KelvinToRgb(temp);
 
     return make_float4(color.x * intensity, color.y * intensity, color.z * intensity, 1.0f);
 }
@@ -186,11 +211,14 @@ __device__ __forceinline__ void tdpd(float r, float *td, float *pd) {
     float a = r * sqrtf(r);
     *pd = 8.0f * a / (sqrt_term * denom * denom);
 }
+__device__ __forceinline__ float fast_mod2pi(float val) {
+    return val - floorf(val * 0.159154943f) * 6.283185307f;
+}
 extern "C" __global__
 void blackholekernel(
 float4* __restrict__ raw_img,
 cudaTextureObject_t tex_obj,
-cudaTextureObject_t prebaked_disk,  // 预烘焙 3D 纹理: (r_disk, |z|, phi) -> (density, temp, intensity)
+cudaTextureObject_t prebaked_disk,
 cudaTextureObject_t lut_color,
 const float time,
 const float cam_pos_x,
@@ -333,46 +361,43 @@ bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 625.0f && fabsf(cam_pos.z) < 
 if (indisk) {
     float r_disk=sqrtf(r_disk_sq);
 
-    // ---- g 因子（必须运行时计算，取决于每射线不同的度规） ----
     float td, pd; tdpd(r_disk, &td, &pd);
+    float rot = pd * time / td;
 
-    float g = fmaxf((fabsf((factor*gamma+p_init*e0)/(td-pd*lz))-1.0f)*1.0f+1.0f, 0.01f);
-    float rot = fmodf(pd * time / td, 6.283185307179586f);
-
-    // phi_final = phi0 + rot — 先 atan2f 再加 rot，比和差角公式少一条 sincosf + 一条 atan2f
     float phi_final = atan2f(temp.y, temp.x) + rot;
-    phi_final = fmodf(phi_final, 6.283185307f);
-    if (phi_final < 0.0f) phi_final += 6.283185307f;
+    phi_final = fast_mod2pi(phi_final);
 
-    // ---- 预烘焙 3D 纹理查表（替代原来的 lut_physics + 程序化噪声） ----
-    // 3D 纹理 extent = (width=PHI, height=Z, depth=R)，对应 numpy C-order (R, Z, PHI, 4)
-    // tex3D 坐标 (x, y, z) → (width, height, depth) → (phi, z, r_disk)
-    //    x: phi:    0.0 .. 2π    → phi * 0.15915494
-    //    y: |z|:    0.0 .. 2.5   → |z| / 2.5
-    //    z: r_disk: 4.9495 .. 25 → (r_disk - 4.9495) / 20.0505
+    // Launch 3D texture fetch as early as possible
     float4 parameters = tex3D<float4>(prebaked_disk,
         phi_final * 0.15915494f,                     // x → phi
         fabsf(cam_pos.z) / 2.5f,                     // y → z
         (r_disk - 4.9495f) / 20.0505f);              // z → r_disk
 
-    float4 emission = disk_emission(fmaxf(parameters.y*g, 1000.0f), parameters.z*g*g*g*g, lut_color);
-
-    // ---- 体积渲染积分（与原代码一致） ----
+    // Independent ALU work while tex3D is in flight — hides scoreboard stall
+    float g = fmaxf((fabsf((factor*gamma+p_init*e0)/(td-pd*lz))-1.0f)*1.0f+1.0f, 0.01f);
     float ravg = (length(prev_pos)+r)/2.0f;
     float uuu = 1.0f + 1.0f/(2.0f*ravg);
+    float g4 = g*g*g*g;
+    float step_len = length(cam_pos-prev_pos);
 
+    // Now parameters are ready — compute everything that depends on parameters
+    // but NOT on the lut_color texture (do it before second TEX to hide its latency too)
     float k = 2.0f;
-    float intensity_factor = 1.0f - __expf(-(k * parameters.z*g*g*g*g)*(k * parameters.z*g*g*g*g));
-    float step_opacity = parameters.x * 1.7f*uuu*uuu*length(cam_pos-prev_pos)* intensity_factor / g;
+    float kzg4 = k * parameters.z * g4;
+    float intensity_factor = 1.0f - __expf(-kzg4 * kzg4);
     float temp_fade = __saturatef((parameters.y * g - 1400.0f) / 500.0f);
+    float step_opacity = parameters.x * 1.7f * uuu * uuu * step_len * intensity_factor / g;
     step_opacity *= temp_fade;
     float alpha = 1.0f - __expf(-step_opacity);
     float transmittance = 1.0f - accumulated_color.w;
+
+    // Second TEX: lut_color lookup — only now, after hiding tex3D latency
+    float4 emission = disk_emission_dep(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4, lut_color);
+
     accumulated_color.x += emission.x * alpha * transmittance;
     accumulated_color.y += emission.y * alpha * transmittance;
     accumulated_color.z += emission.z * alpha * transmittance;
     accumulated_color.w += alpha * transmittance;
-
 
     if (accumulated_color.w > 0.99f) {
         flag = false;

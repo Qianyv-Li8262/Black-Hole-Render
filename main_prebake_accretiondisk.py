@@ -168,7 +168,7 @@ print('正在编译 CUDA kernel...')
 kernel_path = os.path.join(base_path, "blackholekernel3_prebaked.cu")
 with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
-module = cp.RawModule(code=cuda_source, options=('-use_fast_math',))
+module = cp.RawModule(code=cuda_source, options=('-use_fast_math','-lineinfo'))
 trace_rays_kernel = module.get_function("blackholekernel")
 
 
@@ -185,7 +185,7 @@ print('  Kernel 编译完成')
 w, h = 3200, 2000
 total_frames = 1
 start_t = 15
-SSAA_COUNT = 64
+SSAA_COUNT = 1
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
@@ -320,9 +320,9 @@ for frame_idx in range(1, total_frames + 1):
     kernel_args_dynamic[18] = cp.float32(vy)
     kernel_args_dynamic[19] = cp.float32(vz)
     kernel_args_dynamic[-1] = cp.int32(frame_idx)  # frames
-
+    cp.cuda.profiler.start()
     trace_rays_kernel((grid_x, grid_y), (block_x, block_y), tuple(kernel_args_dynamic))
-
+    cp.cuda.profiler.stop()
     extract_bright_kernel((grid_x, grid_y), (block_x, block_y),
         (frame_intermediate_result, bright_buf, np.int32(w), np.int32(h),
          np.float32(1), bloom_threshold))
