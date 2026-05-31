@@ -1,0 +1,17 @@
+*.png
+*.jpg
+*.ptx
+*.npy
+*.bmp
+*.tif
+*.exr
+*.tiff
+*.mp4
+__pycache__/
+*.pyc
+.vs/
+.vscode/
+output_frames/
+build/
+archive/
+backups/
