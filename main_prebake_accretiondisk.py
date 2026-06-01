@@ -149,7 +149,7 @@ img_bgr = cv2.imread(os.path.join(base_path, 'starmap_random_2020_16k.exr'),
 if img_bgr is None:
     print(f"错误：无法加载天空盒！")
     exit()
-img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB) * 300
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB) * 150
 del img_bgr
 img_float = img_rgb.astype(np.float16)
 del img_rgb
@@ -196,15 +196,15 @@ blur_y_fuse_kernel = bloom_module.get_function("blur_y_fuse_postprocess_kernel")
 print('  Kernel 编译完成')
 
 
-w, h = 3200, 2000
+w, h = 8192,4320
 total_frames = 1
-start_t = 15
-SSAA_COUNT = 16
+start_t = 50
+SSAA_COUNT = 8192
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
 
-cam_pos_init = np.array([12.0, 0.0, 0.0], dtype=np.float32)
+cam_pos_init = np.array([  3.4581583 ,-22.43106    , 3.8267765], dtype=np.float32)
 r0 = np.linalg.norm(cam_pos_init)
 dir_unit = cam_pos_init / r0
 
@@ -213,10 +213,10 @@ t_val = start_t
 tau = 0.0
 d_tau = 0.1
 
-cam_yaw, cam_pitch, cam_roll = -3.14, -0.1488899, 0.333
-focal_length = 1
+cam_yaw, cam_pitch, cam_roll = -5.02, -0.28, 0
+focal_length = 1.1716
 
-
+vx,vy,vz=0,0,0
 world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
 fwd_x = np.cos(cam_yaw) * np.cos(cam_pitch)
 fwd_y = np.sin(cam_yaw) * np.cos(cam_pitch)
@@ -231,7 +231,7 @@ right = right0 * np.cos(cam_roll) + up0 * np.sin(cam_roll)
 up = up0 * np.cos(cam_roll) - right0 * np.sin(cam_roll)
 
 
-_, vx, vy, vz, _ = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
+# _, vx, vy, vz, _ = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
 
 
 frame_intermediate_result = cp.empty((h * w * 4), dtype=cp.float32)
@@ -263,7 +263,7 @@ kernel_args = (
     cp.float32(vx), cp.float32(vy), cp.float32(vz),
 
     cp.int32(w), cp.int32(h),
-    cp.float32(3.2), cp.float32(2),        # physwidth, physheight
+    cp.float32(4.096), cp.float32(2.160),        # physwidth, physheight
     cp.float32(focal_length),
     cp.float32(0.1),                        # step
     cp.int32(2000),                         # maxstep
