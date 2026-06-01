@@ -112,32 +112,16 @@ def create_3d_texture_from_npy(data_gpu, is_half=False):
     return texture.TextureObject(res_desc, tex_desc)
 
 
-def update_camera_physics_analytical(tau, r_start, dir_unit, fwd, right, up, d_tau=1.0):
-    M = 1.0
-    R_start = r_start + 1.0 + 0.25 / r_start
-    tau_max = (np.sqrt(2.0) / 3.0) * (R_start**1.5)
+_tex_pins = []  # 阻止 GC 回收纹理底层的 padded array，每帧 sync 后清空
 
-    if tau >= tau_max:
-        r_next = 0.51
-        beta_mag = 0.999
-    else:
-        R = (R_start**1.5 - (1.5 * np.sqrt(2.0)) * tau) ** (2.0 / 3.0)
-        R = max(2.0001, R)
-        r_next = 0.5 * ((R - 1.0) + np.sqrt((R - 1.0)**2 - 1.0))
-        u_next = 1.0 / (2.0 * r_next)
-        beta_mag = np.sqrt(2.0 / r_next) / (1.0 + u_next)
-        beta_mag = min(0.999, beta_mag)
 
-    beta_global = -beta_mag * dir_unit
-    vx_next = np.dot(beta_global, fwd)
-    vy_next = np.dot(beta_global, right)
-    vz_next = np.dot(beta_global, up)
+def make_tex_from_flat(buf_flat, h_img, w_img, is_half=False):
+    """从 flat (h*w, 4) buffer 创建 2D 纹理（自动 256B 对齐 padding，兼容任意分辨率）"""
+    img = buf_flat.reshape((h_img, w_img, 4))
+    tex, rgba = create_texture_object(img, 4, is_half)
+    _tex_pins.append(rgba)  # 防止 padded array 被 GC 回收导致纹理悬空
+    return tex
 
-    u_next = 1.0 / (2.0 * r_next)
-    factor = (1.0 + u_next) / (1.0 - u_next)
-    gamma = 1.0 / np.sqrt(1.0 - beta_mag**2)
-    dt = factor * gamma * d_tau
-    return r_next, vx_next, vy_next, vz_next, dt
 
 
 base_path = os.path.dirname(os.path.abspath(__file__))
@@ -149,7 +133,7 @@ img_bgr = cv2.imread(os.path.join(base_path, 'starmap_random_2020_16k.exr'),
 if img_bgr is None:
     print(f"错误：无法加载天空盒！")
     exit()
-img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB) * 150
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB) * 1
 del img_bgr
 img_float = img_rgb.astype(np.float16)
 del img_rgb
@@ -191,15 +175,22 @@ with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
 bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',))
 extract_bright_kernel = bloom_module.get_function("extract_bright_kernel")
-blur_x_kernel = bloom_module.get_function("blur_x_kernel")
-blur_y_fuse_kernel = bloom_module.get_function("blur_y_fuse_postprocess_kernel")
+bloom_path = os.path.join(base_path, "postprocess_downup.cu")
+with open(bloom_path, "r", encoding="utf-8") as f:
+    bloom_source = f.read()
+downup_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',))
+down = downup_module.get_function("tap13_downsample")
+up1=downup_module.get_function("tent_upsampling_kernel1")
+up2 = downup_module.get_function("tent_upsampling_kernel2")
+final = downup_module.get_function("combine_hdr_bloom_kernel")
+
 print('  Kernel 编译完成')
 
 
 w, h = 8192,4320
 total_frames = 1
 start_t = 50
-SSAA_COUNT = 8192
+SSAA_COUNT = 16
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
@@ -231,18 +222,32 @@ right = right0 * np.cos(cam_roll) + up0 * np.sin(cam_roll)
 up = up0 * np.cos(cam_roll) - right0 * np.sin(cam_roll)
 
 
-_, vx, vy, vz, _ = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
-
 
 frame_intermediate_result = cp.empty((h * w * 4), dtype=cp.float32)
 bright_buf = cp.empty((h * w * 4), dtype=cp.float32)
-blur_x_tmp = cp.empty((h * w * 4), dtype=cp.float32)
 current_frame_float = cp.empty((h * w * 4), dtype=cp.uint8)
 
-bloom_threshold = np.float32(1.7)
-bloom_radius = np.int32(20)
-bloom_sigma = np.float32(8.0)
-bloom_strength = np.float32(1.5)
+# ---- 降采样金字塔分辨率 ----
+w1, h1 = w // 2, h // 2      # 4096, 2160
+w2, h2 = w1 // 2, h1 // 2    # 2048, 1080
+w3, h3 = w2 // 2, h2 // 2    # 1024, 540
+w4, h4 = w3 // 2, h3 // 2    # 512,  270
+w5, h5 = w4 // 2, h4 // 2    # 256,  135
+
+# ---- 降采样缓冲区 ----
+u1_buf = cp.empty((h1 * w1 * 4), dtype=cp.float32)
+u2_buf = cp.empty((h2 * w2 * 4), dtype=cp.float32)
+u3_buf = cp.empty((h3 * w3 * 4), dtype=cp.float32)
+u4_buf = cp.empty((h4 * w4 * 4), dtype=cp.float32)
+u5_buf = cp.empty((h5 * w5 * 4), dtype=cp.float32)
+
+# ---- 升采样临时缓冲区 (最大尺寸 = u1 级别) ----
+upsample_temp = cp.empty((h1 * w1 * 4), dtype=cp.float32)
+upsample_out  = cp.empty((h1 * w1 * 4), dtype=cp.float32)
+
+bloom_threshold = np.float32(5.0)
+scatter = np.float32(0.5)
+bloom_intensity = np.float32(1.0)
 
 block_x, block_y = 32, 8
 grid_x = (w + block_x - 1) // block_x
@@ -272,51 +277,6 @@ kernel_args = (
 )
 
 
-print("\n预渲染...")
-start_t=time.time()
-cam_pos = r * dir_unit
-trace_rays_kernel((grid_x, grid_y), (block_x, block_y), (
-    frame_intermediate_result,
-    cp.uint64(tex_handle.ptr),
-    cp.uint64(tex_prebaked.ptr),
-    cp.uint64(tex_handle_color.ptr),
-
-    cp.float32(t_val),
-    cp.float32(cam_pos_init[0]), cp.float32(cam_pos_init[1]), cp.float32(cam_pos_init[2]),
-    cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
-    cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
-    cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
-    cp.float32(vx), cp.float32(vy), cp.float32(vz),
-
-    cp.int32(w), cp.int32(h),
-    cp.float32(3.2), cp.float32(2),
-    cp.float32(focal_length),
-    cp.float32(0.1),
-    cp.int32(2000),
-    cp.int32(50),
-    cp.int32(1),
-))
-cp.cuda.Device().synchronize()
-
-extract_bright_kernel((grid_x, grid_y), (block_x, block_y),
-    (frame_intermediate_result, bright_buf, np.int32(w), np.int32(h),
-     np.float32(1), bloom_threshold))
-blur_x_kernel((grid_x, grid_y), (block_x, block_y),
-    (bright_buf, blur_x_tmp, np.int32(w), np.int32(h), bloom_radius, bloom_sigma))
-blur_y_fuse_kernel((grid_x, grid_y), (block_x, block_y),
-    (frame_intermediate_result, blur_x_tmp, current_frame_float, np.int32(w), np.int32(h),
-     bloom_radius, bloom_sigma, np.float32(1), bloom_strength))
-cp.cuda.Device().synchronize()
-img_rgba_cp = current_frame_float.reshape((h, w, 4))
-img_rgba_np = cp.asnumpy(img_rgba_cp)
-img_bgr_np = cv2.cvtColor(img_rgba_np, cv2.COLOR_RGBA2BGR)
-output_path = os.path.join(output_dir, f"pre_render.png")
-cv2.imwrite(output_path, img_bgr_np)
-end_t=time.time()
-warmup_elapsed = (end_t-start_t)/50*SSAA_COUNT
-# print(warmup_elapsed)
-print(f'预渲染完成，预计每帧用时 {warmup_elapsed:.3f} s' if not warmup_elapsed == 0 else f'预渲染完成')
-
 
 print(f"\n开始离线渲染, 总计 {total_frames} 帧, 输出目录: {output_dir}")
 
@@ -340,27 +300,95 @@ for frame_idx in range(1, total_frames + 1):
     extract_bright_kernel((grid_x, grid_y), (block_x, block_y),
         (frame_intermediate_result, bright_buf, np.int32(w), np.int32(h),
          np.float32(1), bloom_threshold))
-    blur_x_kernel((grid_x, grid_y), (block_x, block_y),
-        (bright_buf, blur_x_tmp, np.int32(w), np.int32(h), bloom_radius, bloom_sigma))
-    blur_y_fuse_kernel((grid_x, grid_y), (block_x, block_y),
-        (frame_intermediate_result, blur_x_tmp, current_frame_float, np.int32(w), np.int32(h),
-         bloom_radius, bloom_sigma, np.float32(1), bloom_strength))
+
+    # =====================================================================
+    # 降采样金字塔: bright_buf → u1 → u2 → u3 → u4 → u5
+    # =====================================================================
+    # Level 0→1: 8192x4320 → 4096x2160
+    tex_src = make_tex_from_flat(bright_buf, h, w)
+    down((grid_x, grid_y), (block_x, block_y),
+         (tex_src, u1_buf, np.int32(w), np.int32(h), np.int32(w1), np.int32(h1)))
+
+    # Level 1→2: 4096x2160 → 2048x1080
+    gx1 = (w1 + 31) // 32; gy1 = (h1 + 7) // 8
+    tex_src = make_tex_from_flat(u1_buf, h1, w1)
+    down((gx1, gy1), (block_x, block_y),
+         (tex_src, u2_buf, np.int32(w1), np.int32(h1), np.int32(w2), np.int32(h2)))
+
+    # Level 2→3: 2048x1080 → 1024x540
+    gx2 = (w2 + 31) // 32; gy2 = (h2 + 7) // 8
+    tex_src = make_tex_from_flat(u2_buf, h2, w2)
+    down((gx2, gy2), (block_x, block_y),
+         (tex_src, u3_buf, np.int32(w2), np.int32(h2), np.int32(w3), np.int32(h3)))
+
+    # Level 3→4: 1024x540 → 512x270
+    gx3 = (w3 + 31) // 32; gy3 = (h3 + 7) // 8
+    tex_src = make_tex_from_flat(u3_buf, h3, w3)
+    down((gx3, gy3), (block_x, block_y),
+         (tex_src, u4_buf, np.int32(w3), np.int32(h3), np.int32(w4), np.int32(h4)))
+
+    # Level 4→5: 512x270 → 256x135
+    gx4 = (w4 + 31) // 32; gy4 = (h4 + 7) // 8
+    tex_src = make_tex_from_flat(u4_buf, h4, w4)
+    down((gx4, gy4), (block_x, block_y),
+         (tex_src, u5_buf, np.int32(w4), np.int32(h4), np.int32(w5), np.int32(h5)))
+
+    # =====================================================================
+    # 升采样 + 混合金字塔: u5 → ... → u1
+    # =====================================================================
+    downsample_bufs = [u4_buf, u3_buf, u2_buf, u1_buf]
+    level_dims = [(w5, h5), (w4, h4), (w3, h3), (w2, h2), (w1, h1)]
+    # 升采样目标分辨率列表（从 u4 到 u1）
+    target_dims = [(w4, h4), (w3, h3), (w2, h2), (w1, h1)]
+
+    current_flat = u5_buf  # 起点: u5 (256x135)
+
+    for idx, (tw, th) in enumerate(target_dims):
+        cur_h, cur_w = level_dims[idx][1], level_dims[idx][0]  # 当前小图尺寸
+
+        # 创建当前小图的纹理
+        tex_small = make_tex_from_flat(current_flat, cur_h, cur_w)
+
+        # up1: 纹理 → temp (双线性上采样到 2x 分辨率)
+        gx_up1 = (tw + 31) // 32; gy_up1 = (th + 7) // 8
+        up1((gx_up1, gy_up1), (block_x, block_y),
+            (tex_small, upsample_temp, np.int32(cur_w), np.int32(cur_h),
+             np.int32(tw), np.int32(th)))
+
+        # up2: 3x3 tent filter
+        gx_up2 = (tw + 31) // 32; gy_up2 = (th + 31) // 32
+        up2((gx_up2, gy_up2), (32, 32, 1),
+            (upsample_temp, upsample_out, np.int32(tw), np.int32(th)))
+
+        # 混合: upsample_out * scatter + 当前级别的降采样图 (cupy)
+        n_pix = th * tw
+        up_view = upsample_out[:n_pix * 4].reshape((th, tw, 4))
+        dn_view = downsample_bufs[idx][:n_pix * 4].reshape((th, tw, 4))
+        blended = up_view * scatter + dn_view
+        current_flat = blended.reshape((-1,))
+
+    # =====================================================================
+    # 最终合成: u1 级别的 bloom 纹理 + 原始 HDR → 色调映射输出
+    # =====================================================================
+    tex_bloom_final = make_tex_from_flat(current_flat, h1, w1)
+    final((grid_x, grid_y), (block_x, block_y),
+          (frame_intermediate_result, tex_bloom_final, current_frame_float,
+           np.int32(w), np.int32(h), bloom_intensity))
 
     cp.cuda.Device().synchronize()
+    _tex_pins.clear()  # 所有 kernel 已完成，释放 padded array 引用
 
     img_rgba_cp = current_frame_float.reshape((h, w, 4))
     img_rgba_np = cp.asnumpy(img_rgba_cp)
     img_bgr_np = cv2.cvtColor(img_rgba_np, cv2.COLOR_RGBA2BGR)
 
-    output_path = os.path.join(output_dir, f"frame_{frame_idx:05d}.png")
+    output_path = os.path.join(output_dir, f"downup.png")
     cv2.imwrite(output_path, img_bgr_np)
+
+
 
     elapsed = time.time() - start_time
 
-    if frame_idx < total_frames:
-        tau += d_tau
-        r, vx, vy, vz, dt = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
-        t_val += dt
 
     print(f"[Frame {frame_idx:05d}/{total_frames:05d}] {elapsed:.3f} s | "
           f"tau={tau:.1f} r={r:.4f} t={t_val:.2f} beta={np.sqrt(vx**2+vy**2+vz**2):.4f}")

@@ -15,8 +15,8 @@ __device__ __forceinline__ float screen_dither(int x, int y) {
 // 1. 提取高光 Kernel
 extern "C" __global__
 void extract_bright_kernel(
-    const float* __restrict__ accum,
-    float* __restrict__ bright_out,
+    const float4* __restrict__ accum,
+    float4* __restrict__ bright_out,
     int w, int h, float frames, float threshold
 ){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -24,40 +24,23 @@ void extract_bright_kernel(
     if (x >= w || y >= h) return;
     
     int pid = y * w + x;
-    int c_idx = pid * 4;
+    int c_idx = pid;
     
-    float r = accum[c_idx] / frames;
-    float g = accum[c_idx+1] / frames;
-    float b = accum[c_idx+2] / frames;
+    float r = accum[c_idx].x / frames;
+    float g = accum[c_idx].y / frames;
+    float b = accum[c_idx].z / frames;
 
     float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-    // if (luma > threshold) {
-    //     bright_out[c_idx]   = r;
-    //     bright_out[c_idx+1] = g;
-    //     bright_out[c_idx+2] = b;
-    // } else {
-    //     bright_out[c_idx]   = 0.0f;
-    //     bright_out[c_idx+1] = 0.0f;
-    //     bright_out[c_idx+2] = 0.0f;
-    // }
-        // knee 控制过渡的平滑程度。0.1 代表很窄的过渡，0.5 代表非常柔和。
     float knee = 0.5f; 
-    
-    // 我们定义一个软阈值区间：[threshold - knee, threshold + knee]
-    // 使用线性/二次插值平滑权重
     float soft = luma - threshold + knee;
-    soft = fmaxf(0.0f, fminf(soft, 2.0f * knee)); // 限制在 [0, 2*knee]
-    soft = soft * soft / (4.0f * knee + 0.0001f); // 二次方过渡
+    soft = fmaxf(0.0f, fminf(soft, 2.0f * knee));
+    soft = soft * soft / (4.0f * knee + 0.0001f);
     
-    // 最终权重是硬阈值和软阈值的平滑选择
     float weight = fmaxf(soft, luma - threshold) / fmaxf(luma, 0.0001f);
     
-    // 限制权重不大于 1 (针对极亮区域)
     weight = fminf(1.0f, weight);
 
-    bright_out[c_idx]   = r * weight;
-    bright_out[c_idx+1] = g * weight;
-    bright_out[c_idx+2] = b * weight;
+    bright_out[c_idx]   = make_float4(r*weight,g*weight,b*weight,1.0f);
 }
 
 // 2. 横向高斯模糊 Kernel
