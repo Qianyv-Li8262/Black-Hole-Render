@@ -199,12 +199,12 @@ print('  Kernel 编译完成')
 w, h = 8192,4320
 total_frames = 1
 start_t = 50
-SSAA_COUNT = 8192
+SSAA_COUNT = 10000
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
 
-cam_pos_init = np.array([  3.4581583 ,-22.43106    , 3.8267765], dtype=np.float32)
+cam_pos_init = np.array([  2.913251 ,  -11.766628  ,   0.05188831], dtype=np.float32)
 r0 = np.linalg.norm(cam_pos_init)
 dir_unit = cam_pos_init / r0
 
@@ -213,10 +213,10 @@ t_val = start_t
 tau = 0.0
 d_tau = 0.1
 
-cam_yaw, cam_pitch, cam_roll = -5.02, -0.28, 0
-focal_length = 1.1716
+cam_yaw, cam_pitch, cam_roll = -4.76, -0.05, -0.4
+focal_length = 0.9423
 
-vx,vy,vz=0,0,0
+vx,vy,vz=0,-0.25,0
 world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
 fwd_x = np.cos(cam_yaw) * np.cos(cam_pitch)
 fwd_y = np.sin(cam_yaw) * np.cos(cam_pitch)
@@ -231,7 +231,7 @@ right = right0 * np.cos(cam_roll) + up0 * np.sin(cam_roll)
 up = up0 * np.cos(cam_roll) - right0 * np.sin(cam_roll)
 
 
-_, vx, vy, vz, _ = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
+# _, vx, vy, vz, _ = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
 
 
 frame_intermediate_result = cp.empty((h * w * 4), dtype=cp.float32)
