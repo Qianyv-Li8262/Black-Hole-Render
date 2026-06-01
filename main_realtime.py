@@ -41,7 +41,41 @@ def create_texture_object(img_cp,num_of_channels):
     tex_obj = texture.TextureObject(res_ptr, tex_ptr)
     return tex_obj, rgba
 
+def create_3d_texture_from_npy(data_gpu, is_half=False):
+    R, Z, PHI, C = data_gpu.shape
+    assert C == 4, f"Expected 4-channel data, got {C}"
 
+    # 1. 根据 is_half 参数选择目标数据类型 (cp.float16 或 cp.float32)
+    target_dtype = cp.float16 if is_half else cp.float32
+    if data_gpu.dtype != target_dtype:
+        data_gpu = data_gpu.astype(target_dtype, copy=False)
+    
+    data_contiguous = cp.ascontiguousarray(data_gpu)
+
+    # 2. 匹配对应的 16-bit 或 32-bit 四通道描述符
+    ch_desc = (
+        texture.ChannelFormatDescriptor(16, 16, 16, 16, runtime.cudaChannelFormatKindFloat)
+        if is_half else
+        texture.ChannelFormatDescriptor(32, 32, 32, 32, runtime.cudaChannelFormatKindFloat)
+    )
+
+    # 3. 创建 3D CUDA array 并执行数据拷贝
+    # (此时如果 is_half=True，每个 3D 像素单元的物理大小会自动变更为 8 字节)
+    cuda_arr = texture.CUDAarray(ch_desc, PHI, Z, R)
+    data_for_copy = data_contiguous.reshape(R, Z, PHI * C)
+    cuda_arr.copy_from(data_for_copy)
+
+    res_desc = texture.ResourceDescriptor(
+        runtime.cudaResourceTypeArray, cuArr=cuda_arr
+    )
+    tex_desc = texture.TextureDescriptor(
+        addressModes=(runtime.cudaAddressModeClamp,) * 3,
+        filterMode=runtime.cudaFilterModeLinear,
+        readMode=runtime.cudaReadModeElementType,
+        normalizedCoords=1,
+    )
+
+    return texture.TextureObject(res_desc, tex_desc)
 
 
 base_path = os.path.dirname(os.path.abspath(__file__))
@@ -61,24 +95,27 @@ if img_bgr is None:
 # img_bgr = cv2.imread(img_file_path)
 
 
-img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*300
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*100
 # img_float = img_rgb.astype(np.float32) / 255.0 # 正常读取
 img_float = img_rgb.astype(np.float32) # exr读取
 img_cp = cp.array(img_float)
 # img_cp = gaussian_filter(img_cp, sigma=0.8, axes=(0, 1)) 
 tex_handle, _internal_storage = create_texture_object(img_cp,3)
 
-physlut_file_path = os.path.join(base_path, 'disk_lut.npy') # 改为正常吸积盘渲染，这里改一下lut
-lut_phys= cp.load(physlut_file_path).astype(cp.float32)
+print('正在加载预烘焙吸积盘纹理...')
+prebaked_data = np.load(os.path.join(base_path, 'prebaked_disk_noise.npy'))
+ishalf=True
+tex_prebaked = create_3d_texture_from_npy(cp.asarray(prebaked_data, dtype=cp.float16),ishalf)
+print(f"  数据 shape: {prebaked_data.shape}  dtype: {'half' if ishalf else 'float32'}")
+del prebaked_data
+print('  吸积盘 3D 纹理就绪')
 
-tex_handle_lut,____=create_texture_object(lut_phys,4)
-
-colorlut_file_path = os.path.join(base_path, 'color_lut.npy')
+colorlut_file_path = os.path.join(base_path, 'color_lut2.npy')
 lut_color= cp.load(colorlut_file_path).astype(cp.float32)
 
 tex_handle_color,____=create_texture_object(lut_color,3)
 
-kernel_path = os.path.join(base_path, "blackholekernel3.cu") # 改为正常吸积盘渲染，这里改一下kernel
+kernel_path = os.path.join(base_path, "blackholekernel3_prebaked.cu") # 改为正常吸积盘渲染，这里改一下kernel
 with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
@@ -118,7 +155,7 @@ focal_length = 1
 move_speed = 0.05
 turn_speed = 0.01
 focus_speed=1.02
-jitnum=4
+jitnum=1
 
 
 
@@ -160,7 +197,7 @@ right = right0 * np.cos(cam_roll) + up0 * np.sin(cam_roll)
 up = up0 * np.cos(cam_roll) - right0 * np.sin(cam_roll)
 
 a=0.04
-t=171
+t=15
 while not window.should_close():
     current_frame_float = window.map_pbo()
     # th+=0.001
@@ -176,10 +213,10 @@ while not window.should_close():
         # focal_length=a*np.sqrt(cam_pos[0]**2-1)
         camera_moved = True
     if glfw.KEY_D in window.key_pressed:
-        cam_pos -= right * move_speed
+        cam_pos += right * move_speed
         camera_moved = True
     if glfw.KEY_A in window.key_pressed:
-        cam_pos += right * move_speed
+        cam_pos -= right * move_speed
         camera_moved = True
     if glfw.KEY_UP in window.key_pressed:
         cam_pos += up * move_speed 
@@ -188,10 +225,10 @@ while not window.should_close():
         cam_pos -= up * move_speed
         camera_moved = True
     if glfw.KEY_E in window.key_pressed:
-        cam_yaw += turn_speed
+        cam_yaw -= turn_speed
         camera_moved = True
     if glfw.KEY_Q in window.key_pressed:
-        cam_yaw -= turn_speed
+        cam_yaw += turn_speed
         camera_moved = True
     if glfw.KEY_R in window.key_pressed: 
         cam_pitch += turn_speed
@@ -232,11 +269,11 @@ while not window.should_close():
         up = up0 * np.cos(cam_roll) - right0 * np.sin(cam_roll)
 
     trace_rays_kernel((grid_x, grid_y,), (block_x, block_y,), 
-        (frame_intermediate_result, cp.uint64(tex_handle.ptr),cp.uint64(tex_handle_lut.ptr),cp.uint64(tex_handle_color.ptr),#改为正常吸积盘这里删去t
+        (frame_intermediate_result, cp.uint64(tex_handle.ptr),cp.uint64(tex_prebaked.ptr),cp.uint64(tex_handle_color.ptr),cp.float32(t),#改为正常吸积盘这里删去t
          cp.float32(cam_pos[0]), cp.float32(cam_pos[1]), cp.float32(cam_pos[2]),
          cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
          cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
-         cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
+         cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),cp.float32(0), cp.float32(0), cp.float32(0),
          cp.int32(w), cp.int32(h),
          cp.float32(3.2), cp.float32(2), cp.float32(focal_length), cp.float32(0.1), cp.int32(2000), cp.int32(jitnum),cp.int32(frames)))
     
