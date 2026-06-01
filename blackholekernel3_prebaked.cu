@@ -393,7 +393,7 @@ if (indisk) {
 
     // Second TEX: lut_color lookup — only now, after hiding tex3D latency
     float4 emission = disk_emission_dep(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4, lut_color);
-
+    //float4 emission = disk_emission(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4);
     accumulated_color.x += emission.x * alpha * transmittance;
     accumulated_color.y += emission.y * alpha * transmittance;
     accumulated_color.z += emission.z * alpha * transmittance;
