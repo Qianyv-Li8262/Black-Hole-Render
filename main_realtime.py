@@ -295,10 +295,10 @@ while not window.should_close():
     
     frames += 1
     window.unmap_and_draw()
-    print(cam_pos)
-    print(cam_pitch)
-    print(cam_yaw)
-    print(focal_length)
+    # print(cam_pos)
+    # print(cam_pitch)
+    # print(cam_yaw)
+    # print(focal_length)
     # if frames == 2:
     #     sys.exit()
 
