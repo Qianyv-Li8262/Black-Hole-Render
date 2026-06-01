@@ -6,29 +6,37 @@ from cupy.cuda import texture, runtime
 import os, sys
 
 
-def create_texture_object(img_cp, num_of_channels):
-    """创建 2D 纹理（带自动 padding），用于 2D LUT / 天空盒"""
+def create_texture_object(img_cp, num_of_channels, is_half=False):
+    """创建 2D 纹理（带自动 padding），用于 2D LUT / 天空盒，支持 FP16 和 FP32"""
     h, w, c = img_cp.shape
     alignment = 256
 
-    pitch_bytes = ((w * 16 + alignment - 1) // alignment) * alignment
-    padded_w = pitch_bytes // 16
-    
+    # 1. 根据是否为 half (FP16) 决定每个像素的字节数 (4通道) 以及数组数据类型
+    bytes_per_pixel = 8 if is_half else 16
+    dtype = cp.float16 if is_half else cp.float32
 
-    rgba = cp.zeros((h, padded_w, 4), dtype=cp.float32)
+    # 2. 计算满足 256 字节对齐的 pitch 和宽度
+    pitch_bytes = ((w * bytes_per_pixel + alignment - 1) // alignment) * alignment
+    padded_w = pitch_bytes // bytes_per_pixel
+    
+    # 3. 创建带有填充的目标数组并复制数据
+    rgba = cp.zeros((h, padded_w, 4), dtype=dtype)
     rgba[:, :w, :num_of_channels] = img_cp
 
-    ch_fmt = texture.ChannelFormatDescriptor(
-        32, 32, 32, 32,
-        runtime.cudaChannelFormatKindFloat
+    # 4. 根据 is_half 创建对应的通道描述符
+    ch_fmt = (
+        texture.ChannelFormatDescriptor(16, 16, 16, 16, runtime.cudaChannelFormatKindFloat) 
+        if is_half else 
+        texture.ChannelFormatDescriptor(32, 32, 32, 32, runtime.cudaChannelFormatKindFloat)
     )
+
     res_desc = texture.ResourceDescriptor(
         runtime.cudaResourceTypePitch2D,
         arr=rgba,
         chDesc=ch_fmt,
         width=w,
         height=h,
-        pitchInBytes=rgba.strides[0],
+        pitchInBytes=rgba.strides[0],  # 自动对应 rgba 实际每行的字节数 (等同于 pitch_bytes)
     )
     tex_desc = texture.TextureDescriptor(
         addressModes=(runtime.cudaAddressModeClamp, runtime.cudaAddressModeClamp),
@@ -166,7 +174,7 @@ print('  吸积盘 3D 纹理就绪')
 
 print('正在加载颜色 LUT...')
 tex_handle_color, _ = create_texture_object(
-    cp.asarray(np.load(os.path.join(base_path, 'color_lut2.npy')).astype(cp.float32)), 3)
+    cp.asarray(np.load(os.path.join(base_path, 'color_lut2.npy')).astype(cp.float16)), 3,True)
 print('  颜色 LUT 就绪')
 
 
