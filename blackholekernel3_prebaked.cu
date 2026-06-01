@@ -370,7 +370,7 @@ if (indisk) {
     // Launch 3D texture fetch as early as possible
     float4 parameters = tex3D<float4>(prebaked_disk,
         phi_final * 0.15915494f,                     // x → phi
-        fabsf(cam_pos.z) / 2.5f,                     // y → z
+        (cam_pos.z / 2.5f)/2+0.5f,                     // y → z
         (r_disk - 4.9495f) / 20.0505f);              // z → r_disk
 
     // Independent ALU work while tex3D is in flight — hides scoreboard stall

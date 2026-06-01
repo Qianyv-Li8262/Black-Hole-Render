@@ -191,12 +191,12 @@ print('  Kernel 编译完成')
 w, h = 3200, 2000
 total_frames = 1
 start_t = 15
-SSAA_COUNT = 16384
+SSAA_COUNT = 16
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
 
-cam_pos_init = np.array([10.0, 0.0, 1.0], dtype=np.float32)
+cam_pos_init = np.array([12.0, 0.0, 0.0], dtype=np.float32)
 r0 = np.linalg.norm(cam_pos_init)
 dir_unit = cam_pos_init / r0
 

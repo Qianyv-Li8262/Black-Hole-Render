@@ -22,7 +22,7 @@ import os
 # 纹理分辨率
 # ============================================================
 R_SAMPLES   = 256   # r_disk: 4.9495 .. 25.0
-Z_SAMPLES   = 64    # |z|:    0.0    .. 2.5
+Z_SAMPLES   = 128    #  z:    -2.5    .. 2.5
 PHI_SAMPLES = 128   # phi:    0.0    .. 2*pi
 
 R_DISK_MIN = 4.9495
@@ -85,7 +85,7 @@ void prebake_disk_kernel(
     int r_idx   = tmp / z_out;
 
     float r_disk = r_min + (r_max - r_min) * ((float)r_idx + 0.5f) / (float)r_out;
-    float z_abs  = ((float)z_idx + 0.5f) / (float)z_out * z_max;
+    float z_abs  = (((float)z_idx + 0.5f) / (float)z_out-0.5f) * z_max*2.0f;
     float phi    = ((float)phi_idx + 0.5f) / (float)phi_out * 6.283185307f;
 
     float r_3d = sqrtf(r_disk * r_disk + z_abs * z_abs);
@@ -106,7 +106,7 @@ void prebake_disk_kernel(
     //   归一化纹理坐标: u = (r_disk - r_min) / (r_max - r_min)
     //                   v = z_abs / z_max
     float tex_u = (r_disk - r_min) / (r_max - r_min);
-    float tex_v = z_abs / z_max;
+    float tex_v = fabsf(z_abs) / z_max;
     float4 params = tex2D<float4>(lut_physics, tex_u, tex_v);
 
     float density   = params.x * __expf(noise);
