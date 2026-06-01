@@ -375,8 +375,8 @@ if (indisk) {
 
     // Independent ALU work while tex3D is in flight — hides scoreboard stall
     float g = fmaxf((fabsf((factor*gamma+p_init*e0)/(td-pd*lz))-1.0f)*1.0f+1.0f, 0.01f);
-    float ravg = (length(prev_pos)+r)/2.0f;
-    float uuu = 1.0f + 1.0f/(2.0f*ravg);
+    float ravg2 = (length(prev_pos)+r);
+    float uuu = 1.0f + 1.0f/(ravg2);
     float g4 = g*g*g*g;
     float step_len = length(cam_pos-prev_pos);
 
@@ -384,21 +384,30 @@ if (indisk) {
     // but NOT on the lut_color texture (do it before second TEX to hide its latency too)
     float k = 2.0f;
     float kzg4 = k * parameters.z * g4;
-    float intensity_factor = 1.0f - __expf(-kzg4 * kzg4);
+    // float intensity_factor = 1.0f - __expf(-kzg4 * kzg4);
     float temp_fade = __saturatef((parameters.y * g - 1400.0f) / 500.0f);
-    float step_opacity = parameters.x * 1.7f * uuu * uuu * step_len * intensity_factor / g;
+    // float step_opacity = parameters.x * 1.7f * uuu * uuu * step_len * intensity_factor / g;
+    float step_opacity = parameters.x * 1.7f * uuu * uuu *__fmaf_rn(step_len,-__expf(-kzg4 * kzg4),step_len) / g;
     step_opacity *= temp_fade;
-    float alpha = 1.0f - __expf(-step_opacity);
-    float transmittance = 1.0f - accumulated_color.w;
+    // float alpha = 1.0f - __expf(-step_opacity);
+    float temp_exp= -__expf(-step_opacity);
+    // float transmittance = 1.0f - accumulated_color.w;
 
     // Second TEX: lut_color lookup — only now, after hiding tex3D latency
     float4 emission = disk_emission_dep(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4, lut_color);
     //float4 emission = disk_emission(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4);
-    accumulated_color.x += emission.x * alpha * transmittance;
-    accumulated_color.y += emission.y * alpha * transmittance;
-    accumulated_color.z += emission.z * alpha * transmittance;
-    accumulated_color.w += alpha * transmittance;
-
+    // accumulated_color.x += emission.x * alpha * transmittance;
+    // accumulated_color.y += emission.y * alpha * transmittance;
+    // accumulated_color.z += emission.z * alpha * transmittance;
+    // accumulated_color.w += alpha * transmittance;
+    float temp_calc = __fmaf_rn(emission.x,-accumulated_color.w,emission.x);
+    accumulated_color.x += __fmaf_rn(temp_calc,temp_exp,temp_calc);
+    temp_calc = __fmaf_rn(emission.y,-accumulated_color.w,emission.y);
+    accumulated_color.y += __fmaf_rn(temp_calc,temp_exp,temp_calc);
+    temp_calc = __fmaf_rn(emission.z,-accumulated_color.w,emission.z);
+    accumulated_color.z += __fmaf_rn(temp_calc,temp_exp,temp_calc);
+    temp_calc = 1-accumulated_color.w;
+    accumulated_color.w += __fmaf_rn(temp_calc,temp_exp,temp_calc);
     if (accumulated_color.w > 0.99f) {
         flag = false;
     }
