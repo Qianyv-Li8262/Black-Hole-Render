@@ -16,3 +16,4 @@ build/
 archive/
 backups/
 start_claude.ps1
+test_ds.ps1
