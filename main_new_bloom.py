@@ -92,9 +92,9 @@ print('  Kernel 编译完成')
 
 
 w, h = 4096,2160
-total_frames = 10
+total_frames = 600
 start_t = 50
-SSAA_COUNT = 1024
+SSAA_COUNT = 128
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
