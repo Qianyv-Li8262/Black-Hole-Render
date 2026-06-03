@@ -9,7 +9,7 @@ __device__ __forceinline__ float4 operator*(float4 a, float s) {
 }
 extern "C"
 __global__ void gaussianBlurH(float4* __restrict__ out, int width, int height, 
-                              cudaTextureObject_t tex)
+                              cudaTextureObject_t tex,float scale)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -25,7 +25,7 @@ __global__ void gaussianBlurH(float4* __restrict__ out, int width, int height,
 
     float4 sum = tex2D<float4>(tex, u, v) * w[0];
     for (int i = 1; i < 5; i++) {
-        float du = (off[i]) / width;
+        float du = (off[i] * scale) / width;
         sum =sum+ tex2D<float4>(tex, u + du, v) * w[i];
         sum =sum+ tex2D<float4>(tex, u - du, v) * w[i];
     }
@@ -35,7 +35,7 @@ __global__ void gaussianBlurH(float4* __restrict__ out, int width, int height,
 
 extern "C"
 __global__ void gaussianBlurW(float4* __restrict__ out, int width, int height, 
-                              cudaTextureObject_t tex)
+                              cudaTextureObject_t tex,float scale)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -51,7 +51,7 @@ __global__ void gaussianBlurW(float4* __restrict__ out, int width, int height,
 
     float4 sum = tex2D<float4>(tex, u, v) * w[0];
     for (int i = 1; i < 5; i++) {
-        float dv = (off[i]) / height;
+        float dv = (off[i] * scale) / height;
         sum =sum+ tex2D<float4>(tex, u, v + dv) * w[i];
         sum =sum+ tex2D<float4>(tex, u, v - dv) * w[i];
     }
@@ -127,7 +127,8 @@ void compositeBloom(
     uchar4* __restrict__ output,
     int outWidth, int outHeight,
     cudaTextureObject_t originalTex,
-    cudaTextureObject_t* bloomTextures, // 8 个纹理对象数组
+    cudaTextureObject_t* bloomTextures,
+    int num_levels,
     int originalWidth, int originalHeight
 ) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -144,7 +145,7 @@ void compositeBloom(
     const float bloomWeights[8] = {1.0f, 1.5f, 1.0f, 1.5f, 1.8f, 1.0f, 1.0f, 1.0f};
     float4 bloom = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
-    for (int oct = 0; oct < 8; ++oct) {
+    for (int oct = 0; oct < num_levels; ++oct) {
         float scale = (float)(1 << (oct + 1));   // 2^(oct+1)
         float bw = (float)(originalWidth / scale);
         float bh = (float)(originalHeight / scale);
@@ -152,11 +153,17 @@ void compositeBloom(
         float bv = v;
 
         float4 bs = bicubicSample(bloomTextures[oct], make_float2(bu, bv), bw, bh);
-
-        bloom.x += bs.x * bloomWeights[oct];
-        bloom.y += bs.y * bloomWeights[oct];
-        bloom.z += bs.z * bloomWeights[oct];
-        bloom.w += bs.w * bloomWeights[oct];
+        if (oct<=8){
+            bloom.x += bs.x * bloomWeights[oct];
+            bloom.y += bs.y * bloomWeights[oct];
+            bloom.z += bs.z * bloomWeights[oct];
+            bloom.w += bs.w * bloomWeights[oct];
+        } else {
+            bloom.x += bs.x;
+            bloom.y += bs.y;
+            bloom.z += bs.z;
+            bloom.w += bs.w;
+        }
     }
     color.x *= 0.55f;
     color.y *= 0.55f;

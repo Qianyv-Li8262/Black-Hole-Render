@@ -91,10 +91,10 @@ downsample2x = bloom_module.get_function("downsample2x")
 print('  Kernel 编译完成')
 
 
-w, h = 4096,2160
-total_frames = 600
+w, h = 8192,4320
+total_frames = 1
 start_t = 50
-SSAA_COUNT = 128
+SSAA_COUNT = 4
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
@@ -124,27 +124,26 @@ up0 = np.cross(right0, fwd)
 up0 /= np.linalg.norm(up0)
 right = right0 * np.cos(cam_roll) + up0 * np.sin(cam_roll)
 up = up0 * np.cos(cam_roll) - right0 * np.sin(cam_roll)
-w2,h2=w//2,h//2
-w4,h4=w//4,h//4
-w8,h8=w//8,h//8
-w16,h16=w//16,h//16
-w32,h32=w//32,h//32
-w64,h64=w//64,h//64
-w128,h128=w//128,h//128
-w256,h256=w//256,h//256
 
+target_size = 8
+num_levels = int(np.round(np.log2(min(w, h) / target_size)))
+num_levels = max(1, num_levels)
+print(f"降采样层数: {num_levels} 层")
+blur_scale = np.float32(w / 4096.0)
+print(f"模糊因子: {blur_scale:.4f}")
+down_buffers = []
+down_resolutions = []
+curr_w, curr_h = w, h
+for i in range(num_levels):
+    curr_w = max(1, curr_w // 2)
+    curr_h = max(1, curr_h // 2)
+    buf = cp.zeros((curr_w * curr_h * 4), dtype=cp.float32)
+    down_buffers.append(buf)
+    down_resolutions.append((curr_w, curr_h))
 # _, vx, vy, vz, _ = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
 
 
 frame_intermediate_result = cp.empty((h * w * 4), dtype=cp.float32)
-down1=cp.zeros((h2*w2*4),dtype=cp.float32)
-down2=cp.zeros((h4*w4*4),dtype=cp.float32)
-down3=cp.zeros((h8*w8*4),dtype=cp.float32)
-down4=cp.zeros((h16*w16*4),dtype=cp.float32)
-down5=cp.zeros((h32*w32*4),dtype=cp.float32)
-down6=cp.zeros((h64*w64*4),dtype=cp.float32)
-down7=cp.zeros((h128*w128*4),dtype=cp.float32)
-down8=cp.zeros((h256*w256*4),dtype=cp.float32)
 current_frame_float = cp.empty((h * w * 4), dtype=cp.uint8)
 
 bloom_threshold = np.float32(0.5)
@@ -182,7 +181,7 @@ kernel_args = (
 bright_buf = cp.zeros_like(frame_intermediate_result)
 tmp_blur_buf = cp.empty((h * w * 4), dtype=cp.float32)
 print(f"\n开始离线渲染, 总计 {total_frames} 帧, 输出目录: {output_dir}")
-def make_downsample(input_tex_ptr, out_buf, out_w, out_h, tex_list):
+def make_downsample(input_tex_ptr, out_buf, out_w, out_h, tex_list,scale):
     grid_out_x = (out_w + block_x - 1) // block_x
     grid_out_y = (out_h + block_y - 1) // block_y
     downsample2x((grid_out_x, grid_out_y), (block_x, block_y), 
@@ -191,11 +190,11 @@ def make_downsample(input_tex_ptr, out_buf, out_w, out_h, tex_list):
     tex_list.append(tex_down)
     tmp_slice = tmp_blur_buf[:out_w * out_h * 4]
     gaussH((grid_out_x, grid_out_y), (block_x, block_y), 
-           (tmp_slice, cp.int32(out_w), cp.int32(out_h), cp.uint64(tex_down.ptr)))
+           (tmp_slice, cp.int32(out_w), cp.int32(out_h), cp.uint64(tex_down.ptr),cp.float32(scale)))
     tex_tmp = create_texture_array_2d(tmp_slice.reshape(out_h, out_w, 4), 4, (1,1,1,1))
     tex_list.append(tex_tmp)
     gaussW((grid_out_x, grid_out_y), (block_x, block_y), 
-           (out_buf, cp.int32(out_w), cp.int32(out_h), cp.uint64(tex_tmp.ptr)))
+           (out_buf, cp.int32(out_w), cp.int32(out_h), cp.uint64(tex_tmp.ptr),cp.float32(scale)))
     ret_tex = create_texture_array_2d(out_buf.reshape(out_h, out_w, 4), 4, (1,1,1,1))
     tex_list.append(ret_tex)
     return ret_tex
@@ -219,19 +218,24 @@ for frame_idx in range(1, total_frames + 1):
     bright((grid_x, grid_y), (block_x, block_y),(frame_intermediate_result,bright_buf,cp.int32(w),cp.int32(h),cp.float32(1.0),cp.float32(bloom_threshold)))
     tex_bright= create_texture_array_2d(bright_buf.reshape(h,w,4),4,(1,1,1,1))
     temp_textures.append(tex_bright)
-    tex_down1 = make_downsample(tex_bright.ptr, down1, w2, h2, temp_textures)
-    tex_down2 = make_downsample(tex_down1.ptr,  down2, w4, h4, temp_textures)   
-    tex_down3 = make_downsample(tex_down2.ptr,  down3, w8, h8, temp_textures)
-    tex_down4 = make_downsample(tex_down3.ptr,  down4, w16, h16, temp_textures)
-    tex_down5 = make_downsample(tex_down4.ptr,  down5, w32, h32, temp_textures)
-    tex_down6 = make_downsample(tex_down5.ptr,  down6, w64, h64, temp_textures)
-    tex_down7 = make_downsample(tex_down6.ptr,  down7, w128, h128, temp_textures)
-    tex_down8 = make_downsample(tex_down7.ptr,  down8, w256, h256, temp_textures)
+    prev_tex_ptr = tex_bright.ptr
+    tex_levels = []
+    for i in range(num_levels):
+        out_w, out_h = down_resolutions[i]
+        out_buf = down_buffers[i]
+        ret_tex = make_downsample(prev_tex_ptr, out_buf, out_w, out_h, temp_textures,blur_scale)
+        tex_levels.append(ret_tex)
+        prev_tex_ptr = ret_tex.ptr
+
     cp.cuda.Device().synchronize()
-    tex_group=cp.array([tex_down1.ptr,tex_down2.ptr,tex_down3.ptr,tex_down4.ptr,tex_down5.ptr,tex_down6.ptr,tex_down7.ptr,tex_down8.ptr],dtype=cp.uint64)
+    
+    # 打包动态纹理句柄
+    tex_ptrs = [tex.ptr for tex in tex_levels]
+    tex_group = cp.array(tex_ptrs, dtype=cp.uint64)
+    
     tex_original = create_texture_array_2d(frame_intermediate_result.reshape(h,w,4), 4, (1,1,1,1))
     temp_textures.append(tex_original)
-    bloom((grid_x, grid_y), (block_x, block_y),(current_frame_float,cp.int32(w),cp.int32(h),cp.uint64(tex_original.ptr),tex_group,cp.int32(w),cp.int32(h)))
+    bloom((grid_x, grid_y), (block_x, block_y),(current_frame_float,cp.int32(w),cp.int32(h),cp.uint64(tex_original.ptr),tex_group,cp.int32(num_levels),cp.int32(w),cp.int32(h)))
 
 
     img_rgba_cp = current_frame_float.reshape((h, w, 4))
@@ -248,7 +252,7 @@ for frame_idx in range(1, total_frames + 1):
     print(f"[Frame {frame_idx:05d}/{total_frames:05d}] {elapsed:.3f} s | "
           f"tau={tau:.1f} r={r:.4f} t={t_val:.2f} beta={np.sqrt(vx**2+vy**2+vz**2):.4f}")
     del tex_bright
-    del tex_down1, tex_down2, tex_down3, tex_down4, tex_down5, tex_down6, tex_down7, tex_down8
+    del tex_levels
     del tex_original
     del tex_group
     
