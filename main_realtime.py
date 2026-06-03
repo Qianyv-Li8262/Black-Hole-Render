@@ -1,6 +1,5 @@
 '''
 This script is only for finding a good position to make pictures.
-The accretion disk here is axissymmetric,which is a legacy edition that can give a good real-time performance.
 I don't know the way to do temporal antialiasing(I'm a noob!)when the disk is moving so I give up real-time rendering and turned to offline rendering.
 '''
 
@@ -8,74 +7,11 @@ import numpy as np
 import cupy as cp
 import cv2
 import time
-from cupy.cuda import texture
-from cupy.cuda import runtime
+from cuda_tex import create_texture_array_2d, create_texture_array_3d
 import glfw
 from cupyx.scipy.ndimage import gaussian_filter
 import os,sys
 from zero_copy_window import ZeroCopyWindow
-# os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
-def create_texture_object(img_cp,num_of_channels):
-    h, w, c = img_cp.shape
-    bytes_per_pixel = 16 
-    alignment = 256
-    pitch_bytes = ((w * bytes_per_pixel + alignment - 1) // alignment) * alignment
-    padded_w = pitch_bytes // bytes_per_pixel
-    rgba = cp.zeros((h, padded_w, 4), dtype=cp.float32)
-    rgba[:, :w, :num_of_channels] = img_cp
-    ch_fmt = texture.ChannelFormatDescriptor(32, 32, 32, 32, runtime.cudaChannelFormatKindFloat)
-    res_ptr = texture.ResourceDescriptor(
-        runtime.cudaResourceTypePitch2D, 
-        arr=rgba,                  
-        chDesc=ch_fmt,  
-        width=w,
-        height=h,
-        pitchInBytes=pitch_bytes
-    )
-    tex_ptr = texture.TextureDescriptor(
-        addressModes=(runtime.cudaAddressModeClamp, runtime.cudaAddressModeClamp),
-        filterMode=runtime.cudaFilterModeLinear,
-        readMode=runtime.cudaReadModeElementType,
-        normalizedCoords=1
-    )
-    tex_obj = texture.TextureObject(res_ptr, tex_ptr)
-    return tex_obj, rgba
-
-def create_3d_texture_from_npy(data_gpu, is_half=False):
-    R, Z, PHI, C = data_gpu.shape
-    assert C == 4, f"Expected 4-channel data, got {C}"
-
-    # 1. 根据 is_half 参数选择目标数据类型 (cp.float16 或 cp.float32)
-    target_dtype = cp.float16 if is_half else cp.float32
-    if data_gpu.dtype != target_dtype:
-        data_gpu = data_gpu.astype(target_dtype, copy=False)
-    
-    data_contiguous = cp.ascontiguousarray(data_gpu)
-
-    # 2. 匹配对应的 16-bit 或 32-bit 四通道描述符
-    ch_desc = (
-        texture.ChannelFormatDescriptor(16, 16, 16, 16, runtime.cudaChannelFormatKindFloat)
-        if is_half else
-        texture.ChannelFormatDescriptor(32, 32, 32, 32, runtime.cudaChannelFormatKindFloat)
-    )
-
-    # 3. 创建 3D CUDA array 并执行数据拷贝
-    # (此时如果 is_half=True，每个 3D 像素单元的物理大小会自动变更为 8 字节)
-    cuda_arr = texture.CUDAarray(ch_desc, PHI, Z, R)
-    data_for_copy = data_contiguous.reshape(R, Z, PHI * C)
-    cuda_arr.copy_from(data_for_copy)
-
-    res_desc = texture.ResourceDescriptor(
-        runtime.cudaResourceTypeArray, cuArr=cuda_arr
-    )
-    tex_desc = texture.TextureDescriptor(
-        addressModes=(runtime.cudaAddressModeClamp,) * 3,
-        filterMode=runtime.cudaFilterModeLinear,
-        readMode=runtime.cudaReadModeElementType,
-        normalizedCoords=1,
-    )
-
-    return texture.TextureObject(res_desc, tex_desc)
 
 
 base_path = os.path.dirname(os.path.abspath(__file__))
@@ -88,34 +24,37 @@ img_bgr = cv2.imread(img_file_path, cv2.IMREAD_UNCHANGED)   # exr读取
 
 
 if img_bgr is None:
-    print(f"错误：无法在路径 {img_file_path} 找到背景图片！")
-    print("请检查图片文件名是否正确，或者图片是否在文件夹中。")
+    print(f"错误:无法在路径 {img_file_path} 找到背景图片!")
+    print("请检查图片文件名是否正确,或者图片是否在文件夹中。")
     exit() 
 
 # img_bgr = cv2.imread(img_file_path)
 
 
 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*100
-# img_float = img_rgb.astype(np.float32) / 255.0 # 正常读取
-img_float = img_rgb.astype(np.float32) # exr读取
-img_cp = cp.array(img_float)
-# img_cp = gaussian_filter(img_cp, sigma=0.8, axes=(0, 1)) 
-tex_handle, _internal_storage = create_texture_object(img_cp,3)
+img_float = cp.asarray(img_rgb.astype(np.float32))
+del img_rgb
+# img_cp = gaussian_filter(img_cp, sigma=0.8, axes=(0, 1))
+img_rgba = cp.zeros((*img_float.shape[:2], 4), dtype=cp.float16)
+img_rgba[:, :, :3] = img_float
+tex_handle = create_texture_array_2d(img_rgba, 4, (1, 1, 1, 1),True)
 
 print('正在加载预烘焙吸积盘纹理...')
 prebaked_data = np.load(os.path.join(base_path, 'prebaked_disk_noise.npy'))
 ishalf=True
-tex_prebaked = create_3d_texture_from_npy(cp.asarray(prebaked_data, dtype=cp.float16),ishalf)
+tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float16), 4, (1, 1, 1, 1, 1), is_half=ishalf)
 print(f"  数据 shape: {prebaked_data.shape}  dtype: {'half' if ishalf else 'float32'}")
 del prebaked_data
 print('  吸积盘 3D 纹理就绪')
 
 colorlut_file_path = os.path.join(base_path, 'color_lut2.npy')
-lut_color= cp.load(colorlut_file_path).astype(cp.float32)
+lut_color= cp.load(colorlut_file_path).astype(cp.float16)
 
-tex_handle_color,____=create_texture_object(lut_color,3)
+lut_rgba = cp.zeros((*lut_color.shape[:2], 4), dtype=cp.float16)
+lut_rgba[:, :, :3] = lut_color
+tex_handle_color = create_texture_array_2d(lut_rgba, 4, (1, 1, 1, 1),True)
 
-kernel_path = os.path.join(base_path, "blackholekernel3_prebaked.cu") # 改为正常吸积盘渲染，这里改一下kernel
+kernel_path = os.path.join(base_path, "blackholekernel3_prebaked.cu") # 改为正常吸积盘渲染,这里改一下kernel
 with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
@@ -140,7 +79,7 @@ print('kernel complied')
 
 
 
-# 超参数！
+# 超参数!
 
 
 w,h=3200,2000

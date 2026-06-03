@@ -5,62 +5,13 @@ import time
 import threading
 import os
 import sys
-from cupy.cuda import texture
-from cupy.cuda import runtime
-
-# ---------- 纹理辅助函数（与原代码一致） ----------
-def create_texture_object(img_cp, num_of_channels):
-    h, w, c = img_cp.shape
-    bytes_per_pixel = 16
-    alignment = 256
-    pitch_bytes = ((w * bytes_per_pixel + alignment - 1) // alignment) * alignment
-    padded_w = pitch_bytes // bytes_per_pixel
-    rgba = cp.zeros((h, padded_w, 4), dtype=cp.float32)
-    rgba[:, :w, :num_of_channels] = img_cp
-    ch_fmt = texture.ChannelFormatDescriptor(32, 32, 32, 32, runtime.cudaChannelFormatKindFloat)
-    res_ptr = texture.ResourceDescriptor(
-        runtime.cudaResourceTypePitch2D,
-        arr=rgba,
-        chDesc=ch_fmt,
-        width=w,
-        height=h,
-        pitchInBytes=pitch_bytes
-    )
-    tex_ptr = texture.TextureDescriptor(
-        addressModes=(runtime.cudaAddressModeClamp, runtime.cudaAddressModeClamp),
-        filterMode=runtime.cudaFilterModeLinear,
-        readMode=runtime.cudaReadModeElementType,
-        normalizedCoords=1
-    )
-    tex_obj = texture.TextureObject(res_ptr, tex_ptr)
-    return tex_obj, rgba
+from cuda_tex import create_texture_array_2d
 
 
-def create_texture_object_nopadding(img_cp_padded, num_of_channels, h_real, w_real, pitch_bytes, is_half=False):
-    ch_fmt = texture.ChannelFormatDescriptor(32, 32, 32, 32, runtime.cudaChannelFormatKindFloat) if not is_half else \
-             texture.ChannelFormatDescriptor(16, 16, 16, 16, runtime.cudaChannelFormatKindFloat)
-    res_ptr = texture.ResourceDescriptor(
-        runtime.cudaResourceTypePitch2D,
-        arr=img_cp_padded,
-        chDesc=ch_fmt,
-        width=w_real,
-        height=h_real,
-        pitchInBytes=pitch_bytes
-    )
-    tex_ptr = texture.TextureDescriptor(
-        addressModes=(runtime.cudaAddressModeClamp, runtime.cudaAddressModeClamp),
-        filterMode=runtime.cudaFilterModeLinear,
-        readMode=runtime.cudaReadModeElementType,
-        normalizedCoords=1
-    )
-    tex_obj = texture.TextureObject(res_ptr, tex_ptr)
-    return tex_obj
-
-
-# ---------- 物理计算函数（与原代码一致） ----------
+# ---------- 物理计算函数(与原代码一致) ----------
 def update_camera_physics_analytical(tau, r_start, dir_unit, fwd, right, up, d_tau=1.0):
     """
-    计算从无穷远处静止释放的相机，在下落到本征时间 tau 时的严格解析物理状态。
+    计算从无穷远处静止释放的相机,在下落到本征时间 tau 时的严格解析物理状态。
     """
     M = 1.0
     R_start = r_start + 1.0 + 0.25 / r_start
@@ -99,32 +50,29 @@ if __name__ == '__main__':
     img_bgr = cv2.imread(img_file_path, cv2.IMREAD_UNCHANGED)
 
     if img_bgr is None:
-        print(f"错误：无法在路径 {img_file_path} 找到背景图片！")
+        print(f"错误:无法在路径 {img_file_path} 找到背景图片!")
         exit()
 
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB) * 300
     del img_bgr
-    img_float = img_rgb.astype(np.float16)
+    img_float = cp.asarray(img_rgb.astype(np.float16))
     del img_rgb
-    hh, ww, cc = img_float.shape
-    bytes_per_pixel = 8
-    alignment = 256
-    pitch_bytes = ((ww * bytes_per_pixel + alignment - 1) // alignment) * alignment
-    padded_w = pitch_bytes // bytes_per_pixel
-    rgba = np.zeros((hh, padded_w, 4), dtype=np.float16)
-    rgba[:, :ww, :3] = img_float
-    img_cp = cp.array(rgba)
-    del img_float, rgba
-    tex_handle = create_texture_object_nopadding(img_cp, 3, hh, ww, pitch_bytes, True)
+    skybox_rgba = cp.zeros((*img_float.shape[:2], 4), dtype=cp.float16)
+    skybox_rgba[:, :, :3] = img_float
+    del img_float
+    tex_handle = create_texture_array_2d(skybox_rgba, 4, (1, 1, 1, 1), is_half=True)
+    del skybox_rgba
     print('Texture created successfully, starting kernel compilation and LUT initializing.')
 
     physlut_file_path = os.path.join(base_path, 'disk_lut_for_mov_disk.npy')
     lut_phys = cp.load(physlut_file_path).astype(cp.float32)
-    tex_handle_lut, ____ = create_texture_object(lut_phys, 4)
+    tex_handle_lut = create_texture_array_2d(lut_phys, 4, (1, 1, 1, 1))
 
     colorlut_file_path = os.path.join(base_path, 'color_lut2.npy')
     lut_color = cp.load(colorlut_file_path).astype(cp.float32)
-    tex_handle_color, ____ = create_texture_object(lut_color, 3)
+    lut_rgba = cp.zeros((*lut_color.shape[:2], 4), dtype=cp.float32)
+    lut_rgba[:, :, :3] = lut_color
+    tex_handle_color = create_texture_array_2d(lut_rgba, 4, (1, 1, 1, 1))
 
     kernel_path = os.path.join(base_path, "blackholekernel3_moving disk speed.cu")
     with open(kernel_path, "r", encoding="utf-8") as f:
@@ -200,11 +148,11 @@ if __name__ == '__main__':
 
     cam_pos = r * dir_unit
 
-    # ------------------- 渲染核心函数（在子线程中运行） -------------------
+    # ------------------- 渲染核心函数(在子线程中运行) -------------------
     def render_single_frame(frame_idx, ssaa):
         """
-        执行完整的一帧渲染，包括所有kernel启动和同步。
-        如果发生设备重置，会抛出异常。
+        执行完整的一帧渲染,包括所有kernel启动和同步。
+        如果发生设备重置,会抛出异常。
         """
         trace_rays_kernel((grid_x, grid_y), (block_x, block_y),
                           (frame_intermediate_result, cp.uint64(tex_handle.ptr), cp.uint64(tex_handle_lut.ptr),
@@ -233,9 +181,9 @@ if __name__ == '__main__':
                             bloom_radius, bloom_sigma,
                             np.float32(1), bloom_strength))
 
-        cp.cuda.Device().synchronize()  # 阻塞点，若设备重置会抛异常
+        cp.cuda.Device().synchronize()  # 阻塞点,若设备重置会抛异常
 
-    # ------------------- 预渲染：估算单帧用时 -------------------
+    # ------------------- 预渲染:估算单帧用时 -------------------
     print('Starting pre-render for time estimation...')
     try:
         pre_thread = threading.Thread(target=render_single_frame, args=(1, 16))
@@ -247,22 +195,22 @@ if __name__ == '__main__':
 
         estimated_per_frame = pre_elapsed * (SSAA_COUNT / 16)
         total_est = estimated_per_frame * total_frames
-        print(f'预渲染完成，预计每帧用时 {estimated_per_frame:.3f} s，'
-              f'预计总用时：{total_est:.0f} s '
+        print(f'预渲染完成,预计每帧用时 {estimated_per_frame:.3f} s,'
+              f'预计总用时:{total_est:.0f} s '
               f'({total_est // 3600:.0f} hr {((total_est % 3600) // 60):.0f} min {total_est % 60:.1f} secs)')
     except KeyboardInterrupt:
-        print("\n中断，GPU计算已停止")
+        print("\n中断,GPU计算已停止")
         cp.cuda.runtime.deviceReset()
         sys.exit(0)
 
-    # ------------------- 正式渲染循环（可中断） -------------------
-    print(f"\n开始离线渲染，总计 {total_frames} 帧，输出目录: {output_dir}")
+    # ------------------- 正式渲染循环(可中断) -------------------
+    print(f"\n开始离线渲染,总计 {total_frames} 帧,输出目录: {output_dir}")
     frame_idx = 1
     should_exit = False
 
     try:
         while frame_idx <= total_frames and not should_exit:
-            # 更新相机位置（本帧使用）
+            # 更新相机位置(本帧使用)
             cam_pos = r * dir_unit
 
             print(f"[Frame {frame_idx:05d}/{total_frames:05d}] 开始渲染...")
@@ -272,15 +220,15 @@ if __name__ == '__main__':
             render_thread = threading.Thread(target=render_single_frame, args=(frame_idx, SSAA_COUNT))
             render_thread.start()
 
-            # 主线程等待子线程完成，同时保持对KeyboardInterrupt的响应
+            # 主线程等待子线程完成,同时保持对KeyboardInterrupt的响应
             while render_thread.is_alive():
                 render_thread.join(timeout=0.1)
 
-            # 如果线程正常完成，进行数据后处理和物理更新
-            # （若发生设备重置，子线程异常退出，is_alive会变成False，但随后访问CuPy数组会出错，
-            #  所以我们需要捕获可能的异常，但这里我们依赖KeyboardInterrupt来触发设备重置，
-            #  并在退出时不做后续处理。为了安全，可以加一个标志或直接break）
-            # 我们直接在try块中执行后续操作，如果设备重置了，后续操作会抛出异常，被外层的except捕获
+            # 如果线程正常完成,进行数据后处理和物理更新
+            # (若发生设备重置,子线程异常退出,is_alive会变成False,但随后访问CuPy数组会出错,
+            #  所以我们需要捕获可能的异常,但这里我们依赖KeyboardInterrupt来触发设备重置,
+            #  并在退出时不做后续处理。为了安全,可以加一个标志或直接break)
+            # 我们直接在try块中执行后续操作,如果设备重置了,后续操作会抛出异常,被外层的except捕获
             img_rgba_cp = current_frame_float.reshape((h, w, 4))
             img_rgba_np = cp.asnumpy(img_rgba_cp)
             img_bgr_np = cv2.cvtColor(img_rgba_np, cv2.COLOR_RGBA2BGR)
@@ -294,7 +242,7 @@ if __name__ == '__main__':
                   f"本征时 tau = {tau:.1f} | 坐标位置 r = {r:.4f} | 坐标时 t = {t:.2f} | "
                   f"局部物理速度 beta = {np.sqrt(vx**2+vy**2+vz**2):.4f}")
 
-            # 更新物理状态（为下一帧准备）
+            # 更新物理状态(为下一帧准备)
             if frame_idx < total_frames:
                 tau += d_tau
                 r, vx, vy, vz, dt = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
@@ -303,8 +251,8 @@ if __name__ == '__main__':
             frame_idx += 1
 
     except KeyboardInterrupt:
-        print("\n强制中断，GPU计算已停止.")
-        # 重置设备，立即杀死所有正在执行的kernel
+        print("\n强制中断,GPU计算已停止.")
+        # 重置设备,立即杀死所有正在执行的kernel
         cp.cuda.runtime.deviceReset()
         os._exit(0)
     except Exception as e:
