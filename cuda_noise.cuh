@@ -985,4 +985,136 @@ __device__ float repeaterTurbulence(float3 pos, float scaleIn, float scaleOut, i
     return repeater(pos, scaleOut, seed ^ 0x3f821dab, n, 2.0f, 0.5f, basisOut);
 }
 
+// ============================================================
+// NPGS-style accretion disk noise
+// Reference algorithm: multiplicative multi-octave value noise
+// with log compression. Produces large-scale cloud structure
+// instead of fine high-frequency speckle.
+// ============================================================
+
+// 3D value noise with Perlin-fade-smoothed trilinear interpolation.
+// Output range: [-1, 1]. Uses randomGrid (integer hash) so the
+// output is deterministic and numerically stable on GPU.
+__device__ float npgsValueNoise3D(float3 pos)
+{
+    int ix = (int)floorf(pos.x);
+    int iy = (int)floorf(pos.y);
+    int iz = (int)floorf(pos.z);
+
+    float u = fade(pos.x - (float)ix);
+    float v = fade(pos.y - (float)iy);
+    float w = fade(pos.z - (float)iz);
+
+    float v000 = randomGrid(ix,     iy,     iz    );
+    float v100 = randomGrid(ix + 1, iy,     iz    );
+    float v010 = randomGrid(ix,     iy + 1, iz    );
+    float v110 = randomGrid(ix + 1, iy + 1, iz    );
+    float v001 = randomGrid(ix,     iy,     iz + 1);
+    float v101 = randomGrid(ix + 1, iy,     iz + 1);
+    float v011 = randomGrid(ix,     iy + 1, iz + 1);
+    float v111 = randomGrid(ix + 1, iy + 1, iz + 1);
+
+    float x00 = lerp(v000, v100, u);
+    float x10 = lerp(v010, v110, u);
+    float x01 = lerp(v001, v101, u);
+    float x11 = lerp(v011, v111, u);
+    float y0  = lerp(x00, x10, v);
+    float y1  = lerp(x01, x11, v);
+    return lerp(y0, y1, w);
+}
+
+// Multiplicative multi-octave density noise with log compression.
+//   pos       : sample position (caller scales axes independently)
+//   start,end : fractional octave range; per-octave weight w blends edges
+//   contrast  : log-compression exponent (typical 80)
+// Returns ~[0, several]. Higher = denser cloud.
+//
+// Differences from repeaterTurbulence:
+//   - multiplicative accumulation acc *= (1 + 0.1*n*w) with base bias 10,
+//     so low-frequency octaves dominate and high-frequency only add detail
+//   - lacunarity = 3 (octave spacing wider than 2, less octave overlap)
+//   - log(1 + (0.1*acc)^contrast) compresses range, prevents bright speckle
+__device__ float npgsAccretionDiskNoise(float3 pos, float start, float end, float contrast)
+{
+    float acc = 10.0f;
+    int iStart = (int)floorf(start);
+    int iEnd   = (int)ceilf(end);
+
+    for (int i = iStart; i < iEnd; i++) {
+        float iFloat = (float)i;
+        float w = fmaxf(0.0f, fminf(end, iFloat + 1.0f) - fmaxf(start, iFloat));
+        if (w <= 0.0f) continue;
+
+        float freq = powf(3.0f, iFloat);
+        float3 sp  = make_float3(pos.x * freq, pos.y * freq, pos.z * freq);
+        float n    = npgsValueNoise3D(sp);
+        acc *= (1.0f + 0.1f * n * w);
+    }
+
+    return logf(1.0f + powf(0.1f * acc, contrast));
+}
+
+// Centered variant for use as a multiplicative perturbation fed to exp(noise).
+// Returns a value centered at 0 (so exp(noise) stays centered at 1, preserving
+// the underlying physical trend), with tunable amplitude.
+//
+// The raw NPGS noise is positive-skewed: most of the field sits near 0, with
+// cloud peaks reaching several (contrast=80, 2 octaves). Distribution is
+// right-skewed long-tail, NOT symmetric, so simply subtracting 0 does NOT
+// center it. To produce a zero-mean perturbation compatible with the old
+// repeaterTurbulence*0.8 pipeline (noise in ~[-0.8, 0.8]):
+//
+//   raw_n  = npgsAccretionDiskNoise(pos, start, end, contrast)  // [0, ~few], right-skew
+//   norm   = raw_n / center_reference                            // compress to ~[0, 1]
+//   signed = (norm - center_target) * amplitude                  // zero-mean perturbation
+//   out    = clamp(signed, -noise_clip, +noise_clip)             // safety: no inf
+//
+// Tuning recipe (for start=2, end=4, contrast=80):
+//   center_reference ~ 4.0   // raw_n typical upper bound; compresses long tail
+//   center_target    ~ 0.35  // approximates the mean of norm; removes DC offset
+//   amplitude        ~ 0.8   // matches old pipeline's [-0.8, 0.8] magnitude
+//   noise_clip       ~ 4.0   // hard cap; exp(4*2.67)=4.4e4, safe for float32 HDR
+// Resulting noise ~[-0.28, +0.52] for typical samples, exp(noise) ~[0.76, 1.68].
+//
+// The noise_clip is a SAFETY net so you can freely push amplitude / lower
+// center_reference without producing inf in the baked texture. exp(noise*2.67)
+// overflows float32 when noise > 33; clip=4.0 keeps exp(4*2.67)=4.4e4 well
+// inside range. Lower clip for tighter HDR headroom, raise toward 33 for
+// extreme dynamic range.
+//
+// NOTE: noise_clip only bounds the *perturbation*, not the final baked value.
+// If params.z (LUT baseline intensity) is itself large, params.z * exp(noise*2.67)
+// can still exceed half-float range even with noise clipped. Final-value
+// clamping is done in the baker kernel after the exp() multiplication.
+//
+// Parameters:
+//   pos              sample position (caller scales axes independently)
+//   start, end       fractional octave range
+//   contrast         log-compression exponent (typical 80)
+//   center_reference normalization scale for the raw noise. Pick near the
+//                    typical cloud peak so norm ~ [0, 1]. Too small => overflow
+//                    in exp(noise*2.67); too large => perturbation vanishes.
+//   center_target    DC offset to subtract. Must approximate the *mean* of
+//                    (raw_n / center_reference), NOT 0, because the raw
+//                    distribution is right-skewed. Subtracting 0 leaves a large
+//                    positive DC that overflows exp().
+//   amplitude        output scale. With old pipeline expecting noise in
+//                    ~[-0.8, 0.8], a value near 0.8 keeps perturbation comparable.
+//   noise_clip       hard symmetric cap on the output. Guarantees no inf in
+//                    exp(noise*k) for any k up to (88/noise_clip). Default 4.0.
+__device__ float npgsAccretionDiskNoiseCentered(float3 pos, float start, float end,
+                                                float contrast,
+                                                float center_reference,
+                                                float center_target,
+                                                float amplitude,
+                                                float noise_clip = 4.0f)
+{
+    float raw_n = npgsAccretionDiskNoise(pos, start, end, contrast);
+    float norm  = raw_n / fmaxf(center_reference, 1e-6f);
+    float signed_n = (norm - center_target) * amplitude;
+    // Safety clamp: prevents exp(noise*2.67) overflow when amplitude is pushed
+    // high or center_reference is pushed low. Symmetric so DC stays at 0.
+    return fmaxf(-noise_clip, fminf(signed_n, noise_clip));
+}
+
 } // namespace cudaNoise

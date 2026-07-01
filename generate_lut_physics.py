@@ -222,7 +222,7 @@ out_array[u+3]=0.0f;
 
 array=cp.empty((50,1500,4),dtype=cp.float32)
 kernel = cp.RawKernel(generation_source, 'generateLutPhysics')
-kernel((293,),(256,),(array,cp.int32(1500),cp.int32(50),cp.float32(2.5),cp.float32(4.9495),cp.float32(25.0)))
+kernel((293,),(256,),(array,cp.int32(1500),cp.int32(50),cp.float32(2.5),cp.float32(4.9495),cp.float32(35.0)))
 np_arr = array.get()
 np.save('disk_lut_for_mov_disk.npy', np_arr)
 print("LUT 生成完成，形状:", np_arr.shape)

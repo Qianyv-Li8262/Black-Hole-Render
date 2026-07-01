@@ -10,7 +10,7 @@ __device__ __forceinline__ float4 operator*(float4 a, float s)
 {
     return make_float4(a.x * s, a.y * s, a.z * s, a.w * s);
 }
-extern "C" __global__ void gaussianBlurH(float4 *__restrict__ out, int width, int height, cudaTextureObject_t tex,
+extern "C" __global__ void gaussianBlurH(cudaSurfaceObject_t out, int width, int height, cudaTextureObject_t tex,
                                          float scale)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -30,10 +30,10 @@ extern "C" __global__ void gaussianBlurH(float4 *__restrict__ out, int width, in
         sum = sum + tex2D<float4>(tex, u + du, v) * w[i];
         sum = sum + tex2D<float4>(tex, u - du, v) * w[i];
     }
-    out[y * width + x] = sum;
+    surf2Dwrite<float4>(sum, out, x * sizeof(float4), y);
 }
 
-extern "C" __global__ void gaussianBlurW(float4 *__restrict__ out, int width, int height, cudaTextureObject_t tex,
+extern "C" __global__ void gaussianBlurW(cudaSurfaceObject_t out, int width, int height, cudaTextureObject_t tex,
                                          float scale)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -53,7 +53,7 @@ extern "C" __global__ void gaussianBlurW(float4 *__restrict__ out, int width, in
         sum = sum + tex2D<float4>(tex, u, v + dv) * w[i];
         sum = sum + tex2D<float4>(tex, u, v - dv) * w[i];
     }
-    out[y * width + x] = sum;
+    surf2Dwrite<float4>(sum, out, x * sizeof(float4), y);
 }
 
 __device__ float4 bicubicSample(cudaTextureObject_t tex,
@@ -222,8 +222,8 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     output[y * outWidth + x] = make_uchar4((unsigned char)color.x, (unsigned char)color.y, (unsigned char)color.z, 255);
 }
 
-extern "C" __global__ void extractBright(const float4 *__restrict__ accum, float4 *__restrict__ bright_out, int w,
-                                         int h, float frames, float threshold)
+extern "C" __global__ void extractBright(cudaTextureObject_t accum, cudaSurfaceObject_t bright_out, int w, int h,
+                                         float frames, float threshold)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -231,13 +231,9 @@ extern "C" __global__ void extractBright(const float4 *__restrict__ accum, float
         return;
 
     int pid = y * w + x;
-    int c_idx = pid;
+    float4 color = tex2D<float4>(accum, (float)x / (float)w, (float)y / (float)h);
 
-    float r = accum[c_idx].x / frames;
-    float g = accum[c_idx].y / frames;
-    float b = accum[c_idx].z / frames;
-
-    float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    float luma = 0.2126f * color.x + 0.7152f * color.y + 0.0722f * color.z;
     float knee = 0.5f;
     float soft = luma - threshold + knee;
     soft = fmaxf(0.0f, fminf(soft, 2.0f * knee));
@@ -247,10 +243,11 @@ extern "C" __global__ void extractBright(const float4 *__restrict__ accum, float
 
     weight = fminf(1.0f, weight);
 
-    bright_out[c_idx] = make_float4(r * weight, g * weight, b * weight, 1.0f);
+    surf2Dwrite<float4>(make_float4(color.x * weight, color.y * weight, color.z * weight, 1.0f), bright_out,
+                        x * sizeof(float4), y);
 }
 
-extern "C" __global__ void downsample2x(cudaTextureObject_t input_tex, float4 *__restrict__ output_img, int out_w,
+extern "C" __global__ void downsample2x(cudaTextureObject_t input_tex, cudaSurfaceObject_t output_img, int out_w,
                                         int out_h)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -269,5 +266,22 @@ extern "C" __global__ void downsample2x(cudaTextureObject_t input_tex, float4 *_
     float4 c01 = tex2D<float4>(input_tex, u, v + dy);
     float4 c11 = tex2D<float4>(input_tex, u + dx, v + dy);
 
-    output_img[y * out_w + x] = (c00 + c10 + c01 + c11) * 0.25f;
+    surf2Dwrite<float4>((c00 + c10 + c01 + c11) * 0.25f, output_img, x * sizeof(float4), y);
 }
+
+// 临时测试 kernel
+extern "C" __global__ void debugOutput(uchar4 *output, int w, int h, cudaTextureObject_t accum)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h)
+        return;
+
+    float4 color = tex2D<float4>(accum, (x + 0.5f) / w, (y + 0.5f) / h);
+
+    // 直接线性映射到 [0, 255]，不做 tone mapping
+    float scale = 255.0f / 3000.0f; // 假设 max intensity = 3000
+    output[y * w + x] = make_uchar4((unsigned char)(color.x * scale), (unsigned char)(color.y * scale),
+                                    (unsigned char)(color.z * scale), 255);
+}
+

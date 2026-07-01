@@ -1,6 +1,4 @@
-// #include<cooperative_groups.h>
-// #include <cuda_pipeline_primitives.h>
-// #include "cuda_noise.cuh"  // 不再需要 —— 噪声已预烘焙到 3D 纹理
+
 
 __device__ __forceinline__ float3 normalize(float3 v)
 {
@@ -231,7 +229,7 @@ __device__ __forceinline__ float fast_mod2pi(float val)
 }
 
 extern "C" __global__ void
-blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaTextureObject_t prebaked_disk,
+blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTextureObject_t prebaked_disk,
                 cudaTextureObject_t lut_color, const float time, const float cam_pos_x, const float cam_pos_y,
                 const float cam_pos_z, const float fwd_x, const float fwd_y, const float fwd_z, const float right_x,
                 const float right_y, const float right_z, const float up_x, const float up_y, const float up_z,
@@ -268,17 +266,18 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
         physical_y = (((float)pixel_idy + jittery) / (float)imgheight - 0.5f) * physheight;
         float3 cam_pos = make_float3(cam_pos_x, cam_pos_y, cam_pos_z);
 
-        float r_pixel = sqrtf(physical_x * physical_x + physical_y * physical_y);
-        float theta = r_pixel / focal_length;
-        float sin_theta, cos_theta;
-        sincosf(theta, &sin_theta, &cos_theta);
-        float c_phi = 0.0f;
-        float s_phi = 0.0f;
-        if (r_pixel > 1e-6f) {
-            c_phi = physical_x / r_pixel;
-            s_phi = physical_y / r_pixel;
-        }
-        float3 tmp1 = make_float3(cos_theta, (sin_theta * c_phi), -(sin_theta * s_phi));
+        // float r_pixel = sqrtf(physical_x * physical_x + physical_y * physical_y);
+        // float theta = r_pixel / focal_length;
+        // float sin_theta, cos_theta;
+        // sincosf(theta, &sin_theta, &cos_theta);
+        // float c_phi = 0.0f;
+        // float s_phi = 0.0f;
+        // if (r_pixel > 1e-6f) {
+        //     c_phi = physical_x / r_pixel;
+        //     s_phi = physical_y / r_pixel;
+        // }
+        // float3 tmp1 = make_float3(cos_theta, (sin_theta * c_phi), -(sin_theta * s_phi));
+        float3 tmp1 = normalize(make_float3(focal_length,physical_x,-physical_y));
         #ifndef NO_DEPTH_JITTER
         unsigned int depth_seed = pcg_hash(pixel_idx ^ pcg_hash(pixel_idy ^ pcg_hash(i ^ pcg_hash(frames))));
         float depth_jitter = (float)depth_seed / 4294967296.0f;
@@ -390,7 +389,7 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
             float3 k11 = p * uu;
             float3 k12 = g * cam_pos;
 
-            bool in_disk_volume = (r > 4.5f && r < 27.0f && fabsf(cam_pos.z) < 3.0f);
+            bool in_disk_volume = (r > 4.5f && r < 37.0f && fabsf(cam_pos.z) < 3.0f);
             float zone_multiplier = in_disk_volume ? (0.05f + 0.15f * (cam_pos.z * cam_pos.z * 0.25f)) : 1.0f;
             float current_step = step * fminf(50.0f, fmaxf(0.005f, r - 0.54f)) * zone_multiplier;
             #ifdef PHOTON_RING_OPT
@@ -432,14 +431,16 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
             float3 temp = make_float3((cam_pos.x + prev_pos.x) / 2.0f, (cam_pos.y + prev_pos.y) / 2.0f, 0.0f);
             #endif
             float r_disk_sq = temp.x * temp.x + temp.y * temp.y;
-            bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 625.0f && fabsf(cam_pos.z) < 2.5f);
+            bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 1225.0f && fabsf(cam_pos.z) < 2.5f);
 
             if (indisk) {
-                float r_disk = sqrtf(r_disk_sq);
+                float r_disk = sqrtf(r_disk_sq);//差动旋转
 
                 float td, pd;
                 tdpd(r_disk, &td, &pd);
-                float rot = pd * time / td;
+                float td2,pd2;
+                tdpd(7.0f,&td2,&pd2);
+                float rot = pd * 250.0f / td + pd2 * time / td2;
 
                 float phi_final = atan2f(temp.y, temp.x) + rot;
                 phi_final = fast_mod2pi(phi_final);
@@ -448,7 +449,7 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
                 float4 parameters = tex3D<float4>(prebaked_disk,
                                                   phi_final * 0.15915494f,        // x → phi
                                                   (cam_pos.z / 2.5f) / 2 + 0.5f,  // y → z
-                                                  (r_disk - 4.9495f) / 20.0505f); // z → r_disk
+                                                  (r_disk - 4.9495f) / 30.0505f); // z → r_disk
 
 
                 float g = fmaxf((fabsf((factor * gamma + p_init * e0) / (td - pd * lz)) - 1.0f) * 1.0f + 1.0f, 0.01f);
@@ -459,10 +460,11 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
 
 
                 float k = 2.0f;
-                float kzg4 = k * parameters.z * g4;
+                float kzg4 = k * parameters.z;
                 // float intensity_factor = 1.0f - __expf(-kzg4
                 // * kzg4);
-                float temp_fade = __saturatef((parameters.y * g - 1400.0f) / 500.0f);
+                // float temp_fade = __saturatef((parameters.y * g - 1400.0f) / 500.0f);
+                float temp_fade = 1.0f;
                 // float step_opacity = parameters.x * 1.7f *
                 // uuu * uuu * step_len * intensity_factor / g;
                 float step_opacity =
@@ -492,6 +494,9 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
             if (r < 0.55f || r > 140.0f) {
                 flag = false;
             }
+            // if (pixel_idx == 2000 && pixel_idy == 1500){
+            //     printf("Debug,xyz: %f,%f,%f,step: %f,indisk:%d,steps: %d,buffer1:%f\n",cam_pos.x,cam_pos.y,cam_pos.z,current_step,indisk,s,accumulated_color.x);
+            // }
         }
 
         float4 color;
@@ -517,8 +522,8 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
         buffer = buffer + color;
     }
     buffer = buffer * (1.0f / (float)jitternum);
-    int pixel_index = (pixel_idy * imgwidth + pixel_idx);
-    raw_img[pixel_index] = make_float4(buffer.x, buffer.y, buffer.z, 0.0);
+    // int pixel_index = (pixel_idy * imgwidth + pixel_idx);
+    surf2Dwrite<float4>(make_float4(buffer.x, buffer.y, buffer.z, 0.0),raw_img,pixel_idx*sizeof(float4),pixel_idy);
 }
 
 extern "C" __global__ void taaColorClampingKernel(const float4 *currentFrame, const float4 *prevFrame,

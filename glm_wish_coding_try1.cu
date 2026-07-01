@@ -2,6 +2,8 @@
 // #include <cuda_pipeline_primitives.h>
 // #include "cuda_noise.cuh"  // 不再需要 —— 噪声已预烘焙到 3D 纹理
 
+#define A_SPIN 0.0f
+
 __device__ __forceinline__ float3 normalize(float3 v)
 {
     float inv_norm = rsqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -41,6 +43,10 @@ __device__ __forceinline__ float operator*(float3 s, float3 a)
 {
     return a.x * s.x + a.y * s.y + a.z * s.z;
 }
+__device__ __forceinline__ float3 cross(float3 a, float3 b)
+{
+    return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
 __device__ __forceinline__ float length(float3 v)
 {
     return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -73,12 +79,11 @@ __device__ __forceinline__ float3 KelvinToRgb(float Kelvin)
     if (Kelvin < 400.01f)
         return make_float3(0.0f, 0.0f, 0.0f);
 
-    // Teef 转换公式
     float Teff = (Kelvin - 6500.0f) / (6500.0f * Kelvin * 2.2f);
     float3 RgbColor;
-    RgbColor.x = __expf(2.05539304e4f * Teff); // Red
-    RgbColor.y = __expf(2.63463675e4f * Teff); // Green
-    RgbColor.z = __expf(3.30145739e4f * Teff); // Blue
+    RgbColor.x = __expf(2.05539304e4f * Teff); 
+    RgbColor.y = __expf(2.63463675e4f * Teff); 
+    RgbColor.z = __expf(3.30145739e4f * Teff);
 
     float max_c = fmaxf(fmaxf(1.5f * RgbColor.x, RgbColor.y), RgbColor.z);
     float BrightnessScale = 1.0f / max_c;
@@ -142,7 +147,6 @@ __device__ float hash31(float x, float y, float z)
 __device__ float3 procedural_stars(float3 dir, int frames)
 {
     float3 total_stars = make_float3(0.0f, 0.0f, 0.0f);
-
     float lod_blend = __expf(-(float)(frames - 1) * 0.5f);
 
     float sharp1_target = 25.0f;
@@ -202,16 +206,12 @@ __device__ float3 procedural_stars(float3 dir, int frames)
 
 __device__ float4 disk_emission_dep(float temp, float intensity, cudaTextureObject_t lut_color)
 {
-
     float4 color = tex2D<float4>(lut_color, (temp - 510.0f) / 20000.0f, 0.5f);
-
     return make_float4(color.x * intensity, color.y * intensity, color.z * intensity, 1.0f);
 }
 __device__ float4 disk_emission(float temp, float intensity)
 {
-
     float3 color = KelvinToRgb(temp);
-
     return make_float4(color.x * intensity, color.y * intensity, color.z * intensity, 1.0f);
 }
 __device__ __forceinline__ void tdpd(float r, float *td, float *pd)
@@ -230,8 +230,76 @@ __device__ __forceinline__ float fast_mod2pi(float val)
     return val - floorf(val * 0.159154943f) * 6.283185307f;
 }
 
+// =========================================================================
+// Kerr-Schild Metric Helper Functions
+// =========================================================================
+
+// 计算给定笛卡尔坐标下的 Kerr 椭圆半径 r
+__device__ __forceinline__ float kerr_r(float3 x)
+{
+    float a2 = A_SPIN * A_SPIN;
+    float R2 = x.x * x.x + x.y * x.y + x.z * x.z;
+    float tmp1 = R2 - a2;
+    float tmp2 = sqrtf(tmp1 * tmp1 + 4.0f * a2 * x.z * x.z);
+    return sqrtf(0.5f * (tmp1 + tmp2));
+}
+
+// 严格的哈密顿方程导数计算 (基于零测地线约束)
+__device__ __forceinline__ void kerr_derivs(float3 x, float3 p_cov, float3 &v, float3 &dp, float &r_out)
+{
+    float a = A_SPIN;
+    float a2 = a * a;
+    float x2 = x.x * x.x;
+    float y2 = x.y * x.y;
+    float z2 = x.z * x.z;
+    float R2 = x2 + y2 + z2;
+
+    float tmp1 = R2 - a2;
+    float tmp2 = sqrtf(tmp1 * tmp1 + 4.0f * a2 * z2);
+    float r2 = 0.5f * (tmp1 + tmp2);
+    r_out = sqrtf(r2);
+    float r4 = r2 * r2;
+    float r3 = r2 * r_out;
+
+    float D = r4 + a2 * z2;
+    float H = r3 / D;
+    
+    float A_bl = r2 + a2;
+    float lx = (r_out * x.x + a * x.y) / A_bl;
+    float ly = (r_out * x.y - a * x.x) / A_bl;
+    float lz = x.z / r_out;
+    float3 l = make_float3(lx, ly, lz);
+
+    float ldotp = lx * p_cov.x + ly * p_cov.y + lz * p_cov.z;
+    float pdotp = p_cov.x * p_cov.x + p_cov.y * p_cov.y + p_cov.z * p_cov.z;
+
+    // 严格求解 p_0 (S = -p_0)
+    // (1+H) S^2 - 2H(ldotp) S - (pdotp - H(ldotp)^2) = 0
+    // 取物理正根
+    float sqrt_term = sqrtf(fmaxf(0.0f, (1.0f + H) * pdotp - H * ldotp * ldotp));
+    float S = (H * ldotp + sqrt_term) / (1.0f + H); // S > 0
+
+    // dx^i/dlambda = p^i = p_i + H * l_i * (S - ldotp)
+    float term = S - ldotp;
+    v = make_float3(p_cov.x + H * lx * term, 
+                    p_cov.y + H * ly * term, 
+                    p_cov.z + H * lz * term);
+
+    // 严格计算 grad H
+    float inv_D2 = 1.0f / (D * D);
+    float3 gradH;
+    gradH.x = x.x * r_out * (3.0f * a2 * z2 - r4) * inv_D2;
+    gradH.y = x.y * r_out * (3.0f * a2 * z2 - r4) * inv_D2;
+    gradH.z = x.z * r_out * (3.0f * a2 * z2 - r2 * (r2 + 2.0f * a2)) * inv_D2;
+
+    // dp_i/dlambda = 0.5 * grad H * (S - ldotp)^2
+    float dp_scalar = 0.5f * term * term;
+    dp = gradH * dp_scalar;
+}
+// =========================================================================
+
 extern "C" __global__ void
-blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaTextureObject_t prebaked_disk,
+blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTextureObject_t prebaked_disk,
                 cudaTextureObject_t lut_color, const float time, const float cam_pos_x, const float cam_pos_y,
                 const float cam_pos_z, const float fwd_x, const float fwd_y, const float fwd_z, const float right_x,
                 const float right_y, const float right_z, const float up_x, const float up_y, const float up_z,
@@ -241,13 +309,10 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
 
 )
 {
-
     float3 fwd = make_float3(fwd_x, fwd_y, fwd_z);
     float3 right = make_float3(right_x, right_y, right_z);
     float3 up = make_float3(up_x, up_y, up_z);
 
-    float3 beta = make_float3(vfwd, vright, vup);
-    float gamma = rsqrtf(1 - (beta.x * beta.x + beta.y * beta.y + beta.z * beta.z));
     int pixel_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int pixel_idy = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -259,6 +324,9 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
     float jittery;
     float physical_x;
     float physical_y;
+    
+    const float r_plus = 1.0f + sqrtf(1.0f - A_SPIN * A_SPIN);
+
     for (int i = 0; i < jitternum; ++i) {
 
         float2 jit = hammersley(i, jitternum, (unsigned int)pixel_idx, (unsigned int)pixel_idy, 1);
@@ -268,50 +336,89 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
         physical_y = (((float)pixel_idy + jittery) / (float)imgheight - 0.5f) * physheight;
         float3 cam_pos = make_float3(cam_pos_x, cam_pos_y, cam_pos_z);
 
-        float r_pixel = sqrtf(physical_x * physical_x + physical_y * physical_y);
-        float theta = r_pixel / focal_length;
-        float sin_theta, cos_theta;
-        sincosf(theta, &sin_theta, &cos_theta);
-        float c_phi = 0.0f;
-        float s_phi = 0.0f;
-        if (r_pixel > 1e-6f) {
-            c_phi = physical_x / r_pixel;
-            s_phi = physical_y / r_pixel;
-        }
-        float3 tmp1 = make_float3(cos_theta, (sin_theta * c_phi), -(sin_theta * s_phi));
+        float3 tmp1 = normalize(make_float3(focal_length,-physical_x,-physical_y));
         #ifndef NO_DEPTH_JITTER
         unsigned int depth_seed = pcg_hash(pixel_idx ^ pcg_hash(pixel_idy ^ pcg_hash(i ^ pcg_hash(frames))));
         float depth_jitter = (float)depth_seed / 4294967296.0f;
         #endif
 
-        float r = length(cam_pos);
-        float u = 1.0f / (2.0f * r);
-        float upl = 1.0f + u;
-        float umi = 1.0f - u;
-        float factor = upl / umi;
-        float n = upl * upl * upl / umi;
-        float3 beta_global = beta.x * fwd + beta.y * right + beta.z * up;
-        float3 e0 = beta_global * gamma / (upl * upl);
-        float3 e1_fwd = boost(beta, make_float3(1.0f, 0.0f, 0.0f), gamma);
-        e1_fwd = (e1_fwd.x * fwd + e1_fwd.y * right + e1_fwd.z * up) / (upl * upl);
-        float3 e2_right = boost(beta, make_float3(0.0f, 1.0f, 0.0f), gamma);
-        e2_right = (e2_right.x * fwd + e2_right.y * right + e2_right.z * up) / (upl * upl);
-        float3 e3_up = boost(beta, make_float3(0.0f, 0.0f, 1.0f), gamma);
-        e3_up = (e3_up.x * fwd + e3_up.y * right + e3_up.z * up) / (upl * upl);
-        float3 d = normalize(tmp1.x * e1_fwd + tmp1.y * e2_right + tmp1.z * e3_up - 1.0f * e0);
-        #ifndef NO_DEPTH_JITTER
-        cam_pos = cam_pos + d * (depth_jitter * fmaxf((r-1.5f),0.0f) / 10.0f * step);
-        #endif
-        float3 p = d * n;
+        // ==================== 严格四标架与光行差计算 ====================
+        float r = kerr_r(cam_pos);
+        float r2 = r * r;
+        float r3 = r2 * r;
+        float r4 = r2 * r2;
+        float a2 = A_SPIN * A_SPIN;
+        float D = r4 + a2 * cam_pos.z * cam_pos.z;
+        float H = r3 / D;
+        
+        // 局部静止观测者的时间基 e_0 = (1/sqrt(1-H), 0,0,0)
+        float inv_sqrt_1mH = rsqrtf(1.0f - H);
+        
+        // Kerr-Schild 零矢量 l_mu
+        float A_bl = r2 + a2;
+        float3 l = make_float3((r * cam_pos.x + A_SPIN * cam_pos.y) / A_bl, 
+                               (r * cam_pos.y - A_SPIN * cam_pos.x) / A_bl, 
+                               cam_pos.z / r);
+        
+        // 构造严格正交于 l 的空间基 (Gram-Schmidt)
+        float3 e1 = fwd - l * (l * fwd);
+        e1 = normalize(e1);
+        float3 e2 = right - l * (l * right) - e1 * (e1 * right);
+        e2 = normalize(e2);
+        float3 e3 = cross(e1, e2); // 已正交归一
+        
+        // 观测者在局部静止系下的速度
+        float3 beta_vec = make_float3(vfwd, vright, vup);
+        float beta_len2 = beta_vec.x * beta_vec.x + beta_vec.y * beta_vec.y + beta_vec.z * beta_vec.z;
+        float gamma = rsqrtf(1.0f - beta_len2);
+        
+        // 将速度映射到全局笛卡尔空间
+        float3 beta_global = beta_vec.x * e1 + beta_vec.y * e2 + beta_vec.z * e3;
+        
+        // 保留与原代码兼容的相机四速度空间分量
+        float3 e0_space = gamma * beta_global;
+        
+        // tmp1 是光子在观测者系下的方向
+        float beta_dot_n = beta_vec.x * tmp1.x + beta_vec.y * tmp1.y + beta_vec.z * tmp1.z;
+        // 相对静止系的频率 \omega
+        float omega = gamma * (1.0f + beta_dot_n);
+        
+        // 光子在静止系下的方向 (全局笛卡尔表示)
+        float3 n_obs = tmp1.x * e1 + tmp1.y * e2 + tmp1.z * e3;
+        float3 n_rest;
+        if (beta_len2 > 1e-12f) {
+            float inv_beta_len2 = 1.0f / beta_len2;
+            float3 bnor = beta_global * sqrtf(inv_beta_len2);
+            // 严格洛伦兹变换得到静止系下的空间方向
+            n_rest = n_obs + (gamma - 1.0f) * (bnor * n_obs) * bnor + gamma * beta_global;
+        } else {
+            n_rest = n_obs;
+        }
+        
+        // 严格计算全局逆变动量 P^mu = \omega * e_0^\mu + \omega * n_rest
+        float P0 = omega * inv_sqrt_1mH;
+        float3 P_space = omega * n_rest;
+        
+        // 严格降维为协变动量 p_i = g_{i0} P^0 + g_{ij} P^j 
+        // g_{0i} = -H l_i, g_{ij} = \delta_{ij} + H l_i l_j
+        float l_dot_P_space = l.x * P_space.x + l.y * P_space.y + l.z * P_space.z;
+        float3 p;
+        p.x = -H * l.x * P0 + P_space.x + H * l.x * l_dot_P_space;
+        p.y = -H * l.y * P0 + P_space.y + H * l.y * l_dot_P_space;
+        p.z = -H * l.z * P0 + P_space.z + H * l.z * l_dot_P_space;
+        // ===============================================================
+        
         float3 p_init = p;
         float lz = cam_pos.x * p.y - cam_pos.y * p.x;
+        
+        float factor = 1.0f / sqrtf(1.0f - H); // 红移因子 alpha
         bool flag = true;
         float4 accumulated_color = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
         for (int s = 0; s < maxstep && flag; ++s) {
             float3 prev_pos = cam_pos;
 
-            #ifdef USE_RK4    // This is the RK4 method
+            #ifdef USE_RK4    // This is the RK4 method (原代码未改动)
             //step1
             float rmhalf = r - 0.5f;
             float g = -fmaxf(0.0f,upl * (2.0f - u) / (rmhalf * rmhalf * rmhalf));
@@ -323,7 +430,7 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
             //calc step length
             bool in_disk_volume = (r > 4.5f && r < 27.0f && fabsf(cam_pos.z) < 3.0f);
             float zone_multiplier = in_disk_volume ? (0.05f + 0.15f * (cam_pos.z * cam_pos.z * 0.25f)) : 1.0f;
-            float current_step = step * fminf(50.0f, fmaxf(0.005f, r - 0.54f)) * zone_multiplier * 5.0f;//这里RK4放宽步长为5倍
+            float current_step = step * fminf(50.0f, fmaxf(0.005f, r - 0.54f)) * zone_multiplier * 5.0f;
             #ifdef PHOTON_RING_OPT
             float dist_to_ps = fabsf(r - 1.866025f);
             float ps_multiplier = 0.05f + 0.95f * (dist_to_ps / (dist_to_ps + 0.12f));
@@ -381,49 +488,40 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
             umi = 1.0f - u;
             n = upl *upl * upl / umi;
             p = normalize(p) * n;
-            #else     // This is the RK2 method
+            #else     
+            // ==================== RK2 for Kerr-Schild ====================
             // step 1
-            float rmhalf = r - 0.5f;
-            float g = -upl * (2.0f - u) / (rmhalf * rmhalf * rmhalf);
-            float uplsq = upl * upl;
-            float uu = 1.0f / (uplsq * uplsq);
-            float3 k11 = p * uu;
-            float3 k12 = g * cam_pos;
+            float3 k11_v, k11_dp;
+            float r_step1;
+            kerr_derivs(cam_pos, p, k11_v, k11_dp, r_step1);
+            r = r_step1;
 
             bool in_disk_volume = (r > 4.5f && r < 27.0f && fabsf(cam_pos.z) < 3.0f);
             float zone_multiplier = in_disk_volume ? (0.05f + 0.15f * (cam_pos.z * cam_pos.z * 0.25f)) : 1.0f;
-            float current_step = step * fminf(50.0f, fmaxf(0.005f, r - 0.54f)) * zone_multiplier;
+            float current_step = step * fminf(50.0f, fmaxf(0.005f, r - r_plus)) * zone_multiplier;
+            
             #ifdef PHOTON_RING_OPT
             float dist_to_ps = fabsf(r - 1.866025f);
             float ps_multiplier = 0.05f + 0.95f * (dist_to_ps / (dist_to_ps + 0.12f));
-            current_step*=ps_multiplier;
+            current_step *= ps_multiplier;
             #endif
 
             // step 2
             float stephalf = current_step * 0.5f;
-            float3 pos_tmp = cam_pos + (stephalf)*k11;
-            r = length(pos_tmp);
-            u = 1.0f / (2.0f * r);
-            upl = 1.0f + u;
-            umi = 1.0f - u;
-            rmhalf = r - 0.5f;
-            g = -upl * (2.0f - u) / (rmhalf * rmhalf * rmhalf);
-            uplsq = upl * upl;
-            uu = 1.0f / (uplsq * uplsq);
-            float3 k21 = (p + (stephalf)*k12) * uu;
-            float3 k22 = pos_tmp * g;
+            float3 pos_tmp = cam_pos + stephalf * k11_v;
+            float3 p_tmp = p + stephalf * k11_dp;
 
-            cam_pos = cam_pos + (current_step) * (k21);
-            p = p + (current_step) * (k22);
-            r = length(cam_pos);
-            u = 1.0f / (2.0f * r);
-            upl = 1.0f + u;
-            umi = 1.0f - u;
-            n = upl *upl * upl / umi;
-            p = normalize(p) * n;
+            float3 k21_v, k21_dp;
+            float r_step2;
+            kerr_derivs(pos_tmp, p_tmp, k21_v, k21_dp, r_step2);
+
+            cam_pos = cam_pos + current_step * k21_v;
+            p = p + current_step * k21_dp;
+
+            // 更新当前 r
+            r = kerr_r(cam_pos);
+            // =============================================================
             #endif
-
-
 
             #ifdef RAND_SAMP_DISK
             float rand = rand_float(pcg_hash(pixel_idx ^ pcg_hash(pixel_idy ^ pcg_hash(s ^ pcg_hash(i)))));
@@ -431,11 +529,13 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
             #else
             float3 temp = make_float3((cam_pos.x + prev_pos.x) / 2.0f, (cam_pos.y + prev_pos.y) / 2.0f, 0.0f);
             #endif
-            float r_disk_sq = temp.x * temp.x + temp.y * temp.y;
-            bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 625.0f && fabsf(cam_pos.z) < 2.5f);
+            
+            float3 mid_pos = make_float3((cam_pos.x + prev_pos.x) * 0.5f, (cam_pos.y + prev_pos.y) * 0.5f, (cam_pos.z + prev_pos.z) * 0.5f);
+            float r_disk_mid = kerr_r(mid_pos);
+            bool indisk = (r_disk_mid > 4.95f && r_disk_mid < 25.0f && fabsf(mid_pos.z) < 2.5f);
 
             if (indisk) {
-                float r_disk = sqrtf(r_disk_sq);
+                float r_disk = r_disk_mid;
 
                 float td, pd;
                 tdpd(r_disk, &td, &pd);
@@ -444,35 +544,24 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
                 float phi_final = atan2f(temp.y, temp.x) + rot;
                 phi_final = fast_mod2pi(phi_final);
 
-
                 float4 parameters = tex3D<float4>(prebaked_disk,
-                                                  phi_final * 0.15915494f,        // x → phi
-                                                  (cam_pos.z / 2.5f) / 2 + 0.5f,  // y → z
-                                                  (r_disk - 4.9495f) / 20.0505f); // z → r_disk
+                                                  phi_final * 0.15915494f,        
+                                                  (mid_pos.z / 2.5f) / 2 + 0.5f,  
+                                                  (r_disk - 4.9495f) / 20.0505f); 
 
-
-                float g = fmaxf((fabsf((factor * gamma + p_init * e0) / (td - pd * lz)) - 1.0f) * 1.0f + 1.0f, 0.01f);
-                float ravg2 = (length(prev_pos) + r);
+                float g = fmaxf((fabsf((factor * gamma + p_init * e0_space) / (td - pd * lz)) - 1.0f) * 1.0f + 1.0f, 0.01f);
+                float ravg2 = (kerr_r(prev_pos) + r);
                 float uuu = 1.0f + 1.0f / (ravg2);
                 float g4 = g * g * g * g;
                 float step_len = length(cam_pos - prev_pos);
 
-
                 float k = 2.0f;
                 float kzg4 = k * parameters.z * g4;
-                // float intensity_factor = 1.0f - __expf(-kzg4
-                // * kzg4);
                 float temp_fade = __saturatef((parameters.y * g - 1400.0f) / 500.0f);
-                // float step_opacity = parameters.x * 1.7f *
-                // uuu * uuu * step_len * intensity_factor / g;
                 float step_opacity =
                     parameters.x * 1.7f * uuu * uuu * __fmaf_rn(step_len, -__expf(-kzg4 * kzg4), step_len) / g;
                 step_opacity *= temp_fade;
-                // float alpha = 1.0f - __expf(-step_opacity);
                 float temp_exp = -__expf(-step_opacity);
-                // float transmittance = 1.0f -
-                // accumulated_color.w;
-
 
                 float4 emission = disk_emission_dep(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4, lut_color);
 
@@ -489,15 +578,20 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
                 }
             }
 
-            if (r < 0.55f || r > 140.0f) {
+            if (r < r_plus + 0.05f || r > 140.0f) {
                 flag = false;
             }
         }
 
         float4 color;
-        if (r >= 0.55f && !isnan(r)) {
+        if (r >= r_plus + 0.05f && !isnan(r)) {
 
-            float3 final_dir = normalize(p);
+            // 由于积分变量是协变动量 p_i，方向由逆变空间分量 p^i 决定
+            // 逆变动量 p^i = p_i + H l^i (S - l.p)，这在 kerr_derivs 计算的 v 中已经求得
+            float3 v_dummy, dp_dummy;
+            float r_dummy;
+            kerr_derivs(cam_pos, p, v_dummy, dp_dummy, r_dummy);
+            float3 final_dir = normalize(v_dummy);
 
             float phi = atan2f(final_dir.y, -final_dir.x);
             float theta = asinf(-final_dir.z);
@@ -510,15 +604,13 @@ blackholekernel(float4 *__restrict__ raw_img, cudaTextureObject_t tex_obj, cudaT
             color = accumulated_color + bkgd * (1.0f - accumulated_color.w);
 
         } else {
-
             color = accumulated_color + make_float4(0.0f, 0.0f, 0.0f, 1.0f) * (1.0f - accumulated_color.w);
         }
 
         buffer = buffer + color;
     }
     buffer = buffer * (1.0f / (float)jitternum);
-    int pixel_index = (pixel_idy * imgwidth + pixel_idx);
-    raw_img[pixel_index] = make_float4(buffer.x, buffer.y, buffer.z, 0.0);
+    surf2Dwrite<float4>(make_float4(buffer.x, buffer.y, buffer.z, 0.0),raw_img,pixel_idx*sizeof(float4),pixel_idy);
 }
 
 extern "C" __global__ void taaColorClampingKernel(const float4 *currentFrame, const float4 *prevFrame,
