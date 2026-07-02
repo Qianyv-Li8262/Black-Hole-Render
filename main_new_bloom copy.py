@@ -125,7 +125,7 @@ tmp_blur_tex, tmp_blur_surf = create_texture_surface_union_2d(tmp_blur_buf, 4, (
 # focal_length = 96
 
 
-cam_pos_init = np.array([12,-18, 2.4], dtype=np.float32)
+cam_pos_init = np.array([36,-54, 7.2], dtype=np.float32)
 r0 = np.linalg.norm(cam_pos_init)
 dir_unit = cam_pos_init / r0
 
@@ -134,7 +134,7 @@ t_val = start_t
 tau = 0.0
 d_tau = 0.1
 
-cam_yaw, cam_pitch, cam_roll = -4.24, -0.1, -0.4
+cam_yaw, cam_pitch, cam_roll = -4, 0, -0.4
 focal_length = 4
 
 
