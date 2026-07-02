@@ -1,15 +1,4 @@
-__device__ __forceinline__ float4 operator+(float4 a, float4 b)
-{
-    return make_float4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
-}
-__device__ __forceinline__ float4 operator/(float4 a, float s)
-{
-    return make_float4(a.x / s, a.y / s, a.z / s, a.w / s);
-}
-__device__ __forceinline__ float4 operator*(float4 a, float s)
-{
-    return make_float4(a.x * s, a.y * s, a.z * s, a.w * s);
-}
+#include "cuda_vec_math_utils.cuh"
 extern "C" __global__ void gaussianBlurH(cudaSurfaceObject_t out, int width, int height, cudaTextureObject_t tex,
                                          float scale)
 {
@@ -141,7 +130,7 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
         float bv = v;
 
         float4 bs = bicubicSample(bloomTextures[oct], make_float2(bu, bv), bw, bh);
-        if (oct <= 8) {
+        if (oct < 8) {
             bloom.x += bs.x * bloomWeights[oct];
             bloom.y += bs.y * bloomWeights[oct];
             bloom.z += bs.z * bloomWeights[oct];

@@ -38,10 +38,10 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 
 
 print('正在加载天空盒...')
-img_bgr = cv2.imread(os.path.join(base_path, 'starmap_random_2020_16k.exr'),
-                     cv2.IMREAD_UNCHANGED)
-# img_bgr = cv2.imread(os.path.join(base_path, 'black.bmp'),
+# img_bgr = cv2.imread(os.path.join(base_path, 'starmap_random_2020_16k.exr'),
                     #  cv2.IMREAD_UNCHANGED)
+img_bgr = cv2.imread(os.path.join(base_path, 'black.bmp'),
+                     cv2.IMREAD_UNCHANGED)
 if img_bgr is None:
     print(f"错误：无法加载天空盒！")
     exit()
@@ -79,14 +79,14 @@ with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 # 条件编译打开rk4可以显著提升渲染速度（4-5倍，rk4步长大），但是吸积盘的艺术风格会和rk2有差别，而且会存在较严重的采样伪影
 # 建议若不是为了速度，应关闭rk4
-module = cp.RawModule(code=cuda_source, options=('-use_fast_math','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK'))
+module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{base_path}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK'))
 trace_rays_kernel = module.get_function("blackholekernel")
 
 
 bloom_path = os.path.join(base_path, "postprocess_downup copy.cu")
 with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
-bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',))
+bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}',))
 gaussH = bloom_module.get_function("gaussianBlurH")
 gaussW = bloom_module.get_function("gaussianBlurW")
 bloom = bloom_module.get_function("compositeBloom")
@@ -125,7 +125,7 @@ tmp_blur_tex, tmp_blur_surf = create_texture_surface_union_2d(tmp_blur_buf, 4, (
 # focal_length = 96
 
 
-cam_pos_init = np.array([36,-54.3, 7.2], dtype=np.float32)
+cam_pos_init = np.array([12,-18, 2.4], dtype=np.float32)
 r0 = np.linalg.norm(cam_pos_init)
 dir_unit = cam_pos_init / r0
 
@@ -134,7 +134,7 @@ t_val = start_t
 tau = 0.0
 d_tau = 0.1
 
-cam_yaw, cam_pitch, cam_roll = -4.04, -0.1, -0.4
+cam_yaw, cam_pitch, cam_roll = -4.24, -0.1, -0.4
 focal_length = 4
 
 
