@@ -48,19 +48,13 @@ with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
 include_dir = os.path.dirname(os.path.abspath(kernel_path)) 
-module = cp.RawModule(code=cuda_source, options=(
-    '-use_fast_math',
-    '-lineinfo',
-    '-DNO_DEPTH_JITTER',
-
-    '-I', include_dir
-))
+module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{base_path}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK'))
 trace_rays_kernel = module.get_function("blackholekernel")
 
 bloom_path = os.path.join(base_path, "postprocess_downup copy.cu")
 with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
-bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',))
+bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}',))
 gaussH = bloom_module.get_function("gaussianBlurH")
 gaussW = bloom_module.get_function("gaussianBlurW")
 bloom = bloom_module.get_function("compositeBloom")
@@ -68,7 +62,7 @@ bright = bloom_module.get_function("extractBright")
 downsample2x = bloom_module.get_function("downsample2x")
 
 # 超参数与窗口初始化
-w, h = 4096,2160
+w, h = 1600,1000
 
 cam_pos = np.array([38.71, -44.96, 5.18], dtype=np.float32)
 
@@ -95,7 +89,8 @@ bright_buf_tex, bright_buf_surf = create_texture_surface_union_2d(bright_buf, 4,
 target_size = 8
 num_levels = int(np.round(np.log2(min(w, h) / target_size)))
 num_levels = max(1, num_levels)
-blur_scale = (np.float32(w / 4096.0) - 1) * 1.5 + 1
+# blur_scale = (np.float32(w / 4096.0) - 1) * 1.5 + 1
+blur_scale=1
 
 down_texs = []
 down_surfs = []

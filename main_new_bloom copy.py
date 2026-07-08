@@ -96,10 +96,10 @@ debug = bloom_module.get_function("debugOutput")
 print('  Kernel 编译完成')
 
 #-2.47,-4.47,-2.44     -2.61,-4.84,-0.70
-w, h = 3200,2000
+w, h = 4096,2160
 total_frames = 1
 start_t = 20.5
-SSAA_COUNT = 5
+SSAA_COUNT = 50
 
 output_dir = os.path.join(base_path, 'output_frames')
 os.makedirs(output_dir, exist_ok=True)
@@ -158,7 +158,7 @@ target_size = 8
 num_levels = int(np.round(np.log2(min(w, h) / target_size)))
 num_levels = max(1, num_levels)
 print(f"降采样层数: {num_levels} 层")
-blur_scale = (np.float32(w / 4096.0)-1)*1.5+1
+blur_scale=1
 print(f"模糊因子: {blur_scale:.4f}")
 down_texs = []
 down_surfs=[]
@@ -211,7 +211,7 @@ kernel_args = (
     cp.float32(vx), cp.float32(vy), cp.float32(vz),
 
     cp.int32(w), cp.int32(h),
-    cp.float32(6.4), cp.float32(4),        # physwidth, physheight
+    cp.float32(8.192), cp.float32(4.320),        # physwidth, physheight
     cp.float32(focal_length),
     cp.float32(0.02),                        # step
     cp.int32(4000),                         # maxstep
