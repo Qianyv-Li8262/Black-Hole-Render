@@ -22,3 +22,5 @@ failed/
 main_downup_process.py
 .fuckucoderc.json
 temp/
+test_lambdargb.py
+testgmove.py
