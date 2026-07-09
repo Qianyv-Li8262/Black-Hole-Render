@@ -217,63 +217,51 @@ __device__ __forceinline__ float3 wavelength_to_rgb(float lambda_nm)
     float ir_weight = visible_to_ir;
     float visible_weight = uv_to_visible * (1.0f - visible_to_ir);
 
-
     float l = fminf(fmaxf(lambda_nm, 380.0f), 780.0f);
 
     float r = 0.0f;
     float g = 0.0f;
     float b = 0.0f;
 
-
     if (l < 440.0f) {
         r = -(l - 440.0f) / 60.0f;
         g = 0.0f;
         b = 1.0f;
-    }
-    else if (l < 490.0f) {
+    } else if (l < 490.0f) {
         r = 0.0f;
         g = (l - 440.0f) / 50.0f;
         b = 1.0f;
-    }
-    else if (l < 510.0f) {
+    } else if (l < 510.0f) {
         r = 0.0f;
         g = 1.0f;
         b = -(l - 510.0f) / 20.0f;
-    }
-    else if (l < 580.0f) {
+    } else if (l < 580.0f) {
         r = (l - 510.0f) / 70.0f;
         g = 1.0f;
         b = 0.0f;
-    }
-    else if (l < 645.0f) {
+    } else if (l < 645.0f) {
         r = 1.0f;
         g = -(l - 645.0f) / 65.0f;
         b = 0.0f;
-    }
-    else {
+    } else {
         r = 1.0f;
         g = 0.0f;
         b = 0.0f;
     }
 
-
-
     float edge_factor;
     if (l < 420.0f) {
         edge_factor = 0.3f + 0.7f * (l - 380.0f) / 40.0f;
-    }
-    else if (l <= 700.0f) {
+    } else if (l <= 700.0f) {
         edge_factor = 1.0f;
-    }
-    else {
+    } else {
         edge_factor = 0.3f + 0.7f * (780.0f - l) / 80.0f;
     }
 
     float3 visible_rgb = make_float3(r, g, b) * edge_factor;
 
-
-    const float3 uv_color = make_float3(0.55f, 0.0f, 1.0f);  // 紫色
-    const float3 ir_color = make_float3(1.0f, 0.0f, 0.0f);   // 红色
+    const float3 uv_color = make_float3(0.55f, 0.0f, 1.0f); // 紫色
+    const float3 ir_color = make_float3(1.0f, 0.0f, 0.0f);  // 红色
 
     // 如果你觉得太亮，可以整体降一点：
     const float outside_strength = 0.45f;
@@ -281,14 +269,10 @@ __device__ __forceinline__ float3 wavelength_to_rgb(float lambda_nm)
     float3 outside_uv = uv_color * outside_strength;
     float3 outside_ir = ir_color * outside_strength;
 
-    float3 out =
-        visible_rgb * visible_weight +
-        outside_uv * uv_weight +
-        outside_ir * ir_weight;
+    float3 out = visible_rgb * visible_weight + outside_uv * uv_weight + outside_ir * ir_weight;
 
     return out;
 }
-
 
 __device__ __forceinline__ float3 rgb_three_line_frequency_shift(float3 rgb, float g)
 {
@@ -306,8 +290,8 @@ __device__ __forceinline__ float3 rgb_three_line_frequency_shift(float3 rgb, flo
     float3 cG = wavelength_to_rgb(lG);
     float3 cB = wavelength_to_rgb(lB);
 
-    constexpr float green_leaks_to_red = (546.1f - 510.0f) / 70.0f;  // ≈ 0.515714
-    constexpr float blue_leaks_to_red  = (440.0f - 435.8f) / 60.0f;  // ≈ 0.070000
+    constexpr float green_leaks_to_red = (546.1f - 510.0f) / 70.0f; // ≈ 0.515714
+    constexpr float blue_leaks_to_red = (440.0f - 435.8f) / 60.0f;  // ≈ 0.070000
 
     float3 coeff;
     coeff.y = rgb.y;
