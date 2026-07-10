@@ -2,6 +2,8 @@
 *.jpg
 *.ptx
 *.npy
+!color_lut2.npy
+!disk_lut_for_mov_disk.npy
 *.bmp
 *.tif
 *.exr
@@ -24,3 +26,4 @@ main_downup_process.py
 temp/
 test_lambdargb.py
 testgmove.py
+config_offline.py

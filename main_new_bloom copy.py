@@ -4,6 +4,7 @@ import cv2
 import time
 from cuda_tex import *
 import os, sys, gc
+from config_offline import *
 
 def update_camera_physics_analytical(tau, r_start, dir_unit, fwd, right, up, d_tau=1.0):
     M = 1.0
@@ -38,12 +39,12 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 
 
 print('正在加载天空盒...')
-img_bgr = cv2.imread(os.path.join(base_path, 'starmap_random_2020_16k.exr'),
+img_bgr = cv2.imread(os.path.join(base_path, skybox_path),
                      cv2.IMREAD_UNCHANGED)
 # img_bgr = cv2.imread(os.path.join(base_path, 'black.bmp'),
-                    #  cv2.IMREAD_UNCHANGED)
+#                      cv2.IMREAD_UNCHANGED)
 if img_bgr is None:
-    print(f"错误：无法加载天空盒！")
+    print(f"错误:无法加载天空盒!")
     exit()
 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)*100
 del img_bgr
@@ -55,7 +56,7 @@ print('  天空盒纹理就绪')
 
 
 print('正在加载预烘焙吸积盘纹理...')
-prebaked_data = np.load(os.path.join(base_path, 'prebaked_disk_noise_npgs.npy'))
+prebaked_data = np.load(os.path.join(base_path, prebaked_disk_path))
 ishalf=True
 tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float16),4,(0,0,1,1,1),ishalf)
 print(f"  数据 shape: {prebaked_data.shape}  dtype: {'half' if ishalf else 'float32'}")
@@ -64,7 +65,7 @@ print('  吸积盘 3D 纹理就绪')
 
 
 print('正在加载颜色 LUT...')
-lut_rgb = np.load(os.path.join(base_path, 'color_lut2.npy'))
+lut_rgb = np.load(os.path.join(base_path, color_lut_path))
 lut_rgba = np.ones((*lut_rgb.shape[:-1], 4), dtype=lut_rgb.dtype)
 lut_rgba[..., :3] = lut_rgb
 img_float = cp.asarray(lut_rgba, dtype=cp.float16)
@@ -73,17 +74,23 @@ print('  颜色 LUT 就绪')
 
 
 print('正在编译 CUDA kernel...')
-kernel_path = os.path.join(base_path, "blackholekernel3_prebaked copy.cu")
-# kernel_path = os.path.join(base_path, "glm_wish_coding_try1.cu")
-with open(kernel_path, "r", encoding="utf-8") as f:
+_trace_src = os.path.join(base_path, kernel_path)
+with open(_trace_src, "r", encoding="utf-8") as f:
     cuda_source = f.read()
-# 条件编译打开rk4可以显著提升渲染速度（4-5倍，rk4步长大），但是吸积盘的艺术风格会和rk2有差别，而且会存在较严重的采样伪影
-# 建议若不是为了速度，应关闭rk4
-module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{base_path}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK','-DNO_BKGD_DOPPLER'))
+compile_opts = ['-use_fast_math', f'-I{base_path}', '-lineinfo']
+if USE_RK4:
+    compile_opts.append('-DUSE_RK4')
+if NO_DEPTH_JITTER:
+    compile_opts.append('-DNO_DEPTH_JITTER')
+if RAND_SAMP_DISK:
+    compile_opts.append('-DRAND_SAMP_DISK')
+if NO_BKGD_DOPPLER:
+    compile_opts.append('-DNO_BKGD_DOPPLER')
+module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))
 trace_rays_kernel = module.get_function("blackholekernel")
 
 
-bloom_path = os.path.join(base_path, "postprocess_downup copy.cu")
+bloom_path = os.path.join(base_path, bloom_kernel_path)
 with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
 bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}',))
@@ -92,16 +99,13 @@ gaussW = bloom_module.get_function("gaussianBlurW")
 bloom = bloom_module.get_function("compositeBloom")
 bright = bloom_module.get_function("extractBright")
 downsample2x = bloom_module.get_function("downsample2x")
-debug = bloom_module.get_function("debugOutput")
+# debug = bloom_module.get_function("debugOutput")
 print('  Kernel 编译完成')
 
 #-2.47,-4.47,-2.44     -2.61,-4.84,-0.70
-w, h = 4096,2160
-total_frames = 1
-start_t = 20.5
-SSAA_COUNT = 5
+# w, h, total_frames, start_t, SSAA_COUNT 由 config_offline 提供
 
-output_dir = os.path.join(base_path, 'output_frames')
+output_dir = os.path.join(base_path, output_dir)
 os.makedirs(output_dir, exist_ok=True)
 
 
@@ -125,22 +129,18 @@ tmp_blur_tex, tmp_blur_surf = create_texture_surface_union_2d(tmp_blur_buf, 4, (
 # focal_length = 96
 
 
-cam_pos_init = np.array([36,-54, 7.2], dtype=np.float32)
+# cam_pos_init, cam_yaw/pitch/roll, focal_length, d_tau 由 config_offline 提供
+
+
 r0 = np.linalg.norm(cam_pos_init)
 dir_unit = cam_pos_init / r0
 
 r = r0
 t_val = start_t
 tau = 0.0
-d_tau = 0.1
-
-cam_yaw, cam_pitch, cam_roll = -4, 0, -0.4
-focal_length = 4
 
 
-
-
-vx,vy,vz=0,0,0
+# vx, vy, vz 由 config_offline 提供
 world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
 fwd_x = np.cos(cam_yaw) * np.cos(cam_pitch)
 fwd_y = np.sin(cam_yaw) * np.cos(cam_pitch)
@@ -190,7 +190,7 @@ current_frame_float = cp.empty((h * w * 4), dtype=cp.uint8)
 
 bloom_threshold = np.float32(1.7)
 
-block_x, block_y = 32, 8
+# block_x, block_y 由 config_offline 提供
 grid_x = (w + block_x - 1) // block_x
 grid_y = (h + block_y - 1) // block_y
 down_grids = [((w + block_x - 1) // block_x, (h + block_y - 1) // block_y) for w, h in down_resolutions]
@@ -211,10 +211,10 @@ kernel_args = (
     cp.float32(vx), cp.float32(vy), cp.float32(vz),
 
     cp.int32(w), cp.int32(h),
-    cp.float32(8.192), cp.float32(4.320),        # physwidth, physheight
+    cp.float32(w * PIXEL_PITCH), cp.float32(h * PIXEL_PITCH),  # physwidth, physheight
     cp.float32(focal_length),
-    cp.float32(0.02),                        # step
-    cp.int32(4000),                         # maxstep
+    cp.float32(step),
+    cp.int32(maxstep),
     cp.int32(SSAA_COUNT),                   # jitternum
     cp.int32(1),                            # frames
 )
@@ -304,11 +304,11 @@ for frame_idx in range(1, total_frames + 1):
     with render_stream:
         # 1. 核心光追
         trace_rays_kernel((grid_x, grid_y), (block_x, block_y), tuple(kernel_args_dynamic))
-        # 2. 紧接着执行后处理 (GPU 会自动等光追画完再处理 Graph，绝不抢跑)
+        # 2. 紧接着执行后处理 (GPU 会自动等光追画完再处理 Graph,绝不抢跑)
         postprocess_graph.launch(stream=render_stream)
         # debug((grid_x, grid_y), (block_x, block_y),(current_frame_float,w,h,frame_inter_tex.ptr))
 
-    # ====== 【修复点 3】必须同步！让 CPU 停下来等 GPU 把所有活干完再截图 ======
+    # ====== 【修复点 3】必须同步!让 CPU 停下来等 GPU 把所有活干完再截图 ======
     cp.cuda.profiler.stop()
     render_stream.synchronize()
 
@@ -323,7 +323,6 @@ for frame_idx in range(1, total_frames + 1):
 
     elapsed = time.time() - start_time
     print(f'this frame, vx={vx}')
-    vx+=0.02
 
 
     print(f"[Frame {frame_idx:05d}/{total_frames:05d}] {elapsed:.3f} s | "
@@ -332,4 +331,4 @@ for frame_idx in range(1, total_frames + 1):
 
     gc.collect()
 
-print("\n渲染完毕！")
+print("\n渲染完毕!")

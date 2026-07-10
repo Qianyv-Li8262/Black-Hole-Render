@@ -58,3 +58,8 @@ static __device__ __forceinline__ float operator*(float3 a, float3 b)
 {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
+
+__device__ __forceinline__ float3 fma_3s3(float3 a, float s, float3 b)
+{
+    return make_float3(__fmaf_rn(a.x, s, b.x), __fmaf_rn(a.y, s, b.y), __fmaf_rn(a.z, s, b.z));
+}

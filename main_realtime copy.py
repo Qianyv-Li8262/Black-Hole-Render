@@ -64,10 +64,10 @@ downsample2x = bloom_module.get_function("downsample2x")
 # 超参数与窗口初始化
 w, h = 1600,1000
 
-cam_pos = np.array([38.71, -44.96, 5.18], dtype=np.float32)
+cam_pos = np.array([-4.81, -84.42, 13.58], dtype=np.float32)
 
 
-cam_yaw, cam_pitch, cam_roll = -4.04, -0.09, 0
+cam_yaw, cam_pitch, cam_roll = -10.48, 0.04, -0.3
 focal_length = 3
 
 move_speed = 0.05
@@ -247,7 +247,7 @@ while not window.should_close():
                 cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
                 cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
                 cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
-                cp.float32(0), cp.float32(0), cp.float32(0),
+                cp.float32(0.1574), cp.float32(0.5873), cp.float32(0),
                 cp.int32(w), cp.int32(h),
                 cp.float32(3.2), cp.float32(2.0), cp.float32(focal_length), cp.float32(0.1), cp.int32(2000), cp.int32(jitnum), cp.int32(frames)
             )
