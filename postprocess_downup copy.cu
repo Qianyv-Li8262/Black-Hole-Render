@@ -84,7 +84,7 @@ __device__ float4 bicubicSample(cudaTextureObject_t tex,
     float h0y = (w1y / g0y) - 0.5f;
     float h1y = (w3y / g1y) + 1.5f;
 
-    // 5. 计算最终的 4 个采样点归一化坐标 (去除了多余的 + 0.5f 偏移！)
+    // 5. 计算最终的 4 个采样点归一化坐标 (去除了多余的 + 0.5f 偏移!)
     float u0 = (ix + h0x + 0.5f) / texWidth;
     float u1 = (ix + h1x + 0.5f) / texWidth;
     float v0 = (iy + h0y + 0.5f) / texHeight;
@@ -118,7 +118,7 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     // 1. 原始颜色
     float4 color = tex2D<float4>(originalTex, u, v);
 
-    // 2. Bloom 累加（分量展开）
+    // 2. Bloom 累加(分量展开)
     const float bloomWeights[8] = {1.0f, 1.5f, 1.0f, 1.5f, 1.8f, 1.0f, 1.0f, 1.0f};
     float4 bloom = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -145,7 +145,7 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     color.x *= 0.55f;
     color.y *= 0.55f;
     color.z *= 0.55f;
-    // 原始颜色叠加 Bloom（0.08 强度）
+    // 原始颜色叠加 Bloom(0.08 强度)
     color.x += bloom.x * 0.08f;
     color.y += bloom.y * 0.08f;
     color.z += bloom.z * 0.08f;
@@ -156,7 +156,21 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     color.y *= 0.15f;
     color.z *= 0.15f;
 
-    // 4. 改良 Reinhard 色调映射
+    // 4. 色调映射
+#ifdef USE_ACES
+    // ACES Filmic (Narkowicz fit)
+    float3 aces = make_float3(color.x, color.y, color.z);
+    {
+        float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+        aces.x = (aces.x * (a * aces.x + b)) / (aces.x * (c * aces.x + d) + e);
+        aces.y = (aces.y * (a * aces.y + b)) / (aces.y * (c * aces.y + d) + e);
+        aces.z = (aces.z * (a * aces.z + b)) / (aces.z * (c * aces.z + d) + e);
+    }
+    color.x = fminf(aces.x, 1.0f);
+    color.y = fminf(aces.y, 1.0f);
+    color.z = fminf(aces.z, 1.0f);
+#else
+    // 改良 Reinhard 色调映射
     // 先 pow(color, 1.5)
     color.x = powf(color.x, 1.5f);
     color.y = powf(color.y, 1.5f);
@@ -171,7 +185,9 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     color.x = powf(color.x, 1.0f / 1.5f);
     color.y = powf(color.y, 1.0f / 1.5f);
     color.z = powf(color.z, 1.0f / 1.5f);
+#endif
 
+#ifdef USE_S_CURVE
     // 5. S 曲线对比度增强：mix(color, color*color*(3-2*color), 1.0)
     // 即 color = color * color * (3 - 2*color)
     float tmpR = color.x * color.x * (3.0f - 2.0f * color.x);
@@ -185,6 +201,7 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     color.x = powf(color.x, 1.3f);
     color.y = powf(color.y, 1.20f);
     color.z = powf(color.z, 1.0f);
+#endif
 
     // 7. 真正的饱和度控制 (Saturation)
     // 根据 Rec.709 标准提取像素的感知亮度 (Luma)
@@ -198,7 +215,7 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     color.y = luma + (color.y - luma) * saturation;
     color.z = luma + (color.z - luma) * saturation;
 
-    // 防止拉伸后出现负数或溢出，最后进行严格裁剪 (Clamp)
+    // 防止拉伸后出现负数或溢出,最后进行严格裁剪 (Clamp)
     color.x = fmaxf(0.0f, fminf(color.x * 1.01f, 1.0f));
     color.y = fmaxf(0.0f, fminf(color.y * 1.01f, 1.0f));
     color.z = fmaxf(0.0f, fminf(color.z * 1.01f, 1.0f));
@@ -268,7 +285,7 @@ extern "C" __global__ void debugOutput(uchar4 *output, int w, int h, cudaTexture
 
     float4 color = tex2D<float4>(accum, (x + 0.5f) / w, (y + 0.5f) / h);
 
-    // 直接线性映射到 [0, 255]，不做 tone mapping
+    // 直接线性映射到 [0, 255],不做 tone mapping
     float scale = 255.0f / 3000.0f; // 假设 max intensity = 3000
     output[y * w + x] = make_uchar4((unsigned char)(color.x * scale), (unsigned char)(color.y * scale),
                                     (unsigned char)(color.z * scale), 255);

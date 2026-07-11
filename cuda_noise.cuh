@@ -995,7 +995,7 @@ __device__ float repeaterTurbulence(float3 pos, float scaleIn, float scaleOut, i
 // 3D value noise with Perlin-fade-smoothed trilinear interpolation.
 // Output range: [-1, 1]. Uses randomGrid (integer hash) so the
 // output is deterministic and numerically stable on GPU.
-__device__ float npgsValueNoise3D(float3 pos)
+__device__ float npgsValueNoise3D(float3 pos, int seed = 0)
 {
     int ix = (int)floorf(pos.x);
     int iy = (int)floorf(pos.y);
@@ -1005,14 +1005,14 @@ __device__ float npgsValueNoise3D(float3 pos)
     float v = fade(pos.y - (float)iy);
     float w = fade(pos.z - (float)iz);
 
-    float v000 = randomGrid(ix,     iy,     iz    );
-    float v100 = randomGrid(ix + 1, iy,     iz    );
-    float v010 = randomGrid(ix,     iy + 1, iz    );
-    float v110 = randomGrid(ix + 1, iy + 1, iz    );
-    float v001 = randomGrid(ix,     iy,     iz + 1);
-    float v101 = randomGrid(ix + 1, iy,     iz + 1);
-    float v011 = randomGrid(ix,     iy + 1, iz + 1);
-    float v111 = randomGrid(ix + 1, iy + 1, iz + 1);
+    float v000 = randomGrid(ix,     iy,     iz,     seed);
+    float v100 = randomGrid(ix + 1, iy,     iz,     seed);
+    float v010 = randomGrid(ix,     iy + 1, iz,     seed);
+    float v110 = randomGrid(ix + 1, iy + 1, iz,     seed);
+    float v001 = randomGrid(ix,     iy,     iz + 1, seed);
+    float v101 = randomGrid(ix + 1, iy,     iz + 1, seed);
+    float v011 = randomGrid(ix,     iy + 1, iz + 1, seed);
+    float v111 = randomGrid(ix + 1, iy + 1, iz + 1, seed);
 
     float x00 = lerp(v000, v100, u);
     float x10 = lerp(v010, v110, u);
@@ -1034,7 +1034,8 @@ __device__ float npgsValueNoise3D(float3 pos)
 //     so low-frequency octaves dominate and high-frequency only add detail
 //   - lacunarity = 3 (octave spacing wider than 2, less octave overlap)
 //   - log(1 + (0.1*acc)^contrast) compresses range, prevents bright speckle
-__device__ float npgsAccretionDiskNoise(float3 pos, float start, float end, float contrast)
+__device__ float npgsAccretionDiskNoise(float3 pos, float start, float end, float contrast,
+                                       int seed = 0)
 {
     float acc = 10.0f;
     int iStart = (int)floorf(start);
@@ -1047,7 +1048,7 @@ __device__ float npgsAccretionDiskNoise(float3 pos, float start, float end, floa
 
         float freq = powf(3.0f, iFloat);
         float3 sp  = make_float3(pos.x * freq, pos.y * freq, pos.z * freq);
-        float n    = npgsValueNoise3D(sp);
+        float n    = npgsValueNoise3D(sp, seed);
         acc *= (1.0f + 0.1f * n * w);
     }
 
@@ -1107,9 +1108,10 @@ __device__ float npgsAccretionDiskNoiseCentered(float3 pos, float start, float e
                                                 float center_reference,
                                                 float center_target,
                                                 float amplitude,
-                                                float noise_clip = 4.0f)
+                                                float noise_clip = 4.0f,
+                                                int seed = 0)
 {
-    float raw_n = npgsAccretionDiskNoise(pos, start, end, contrast);
+    float raw_n = npgsAccretionDiskNoise(pos, start, end, contrast, seed);
     float norm  = raw_n / fmaxf(center_reference, 1e-6f);
     float signed_n = (norm - center_target) * amplitude;
     // Safety clamp: prevents exp(noise*2.67) overflow when amplitude is pushed

@@ -55,6 +55,11 @@ NPGS_AMPLITUDE = 0.2
 #   注意: noise_clip 只限扰动本身, 最终输出值由 OUTPUT_CLIP 兜底 (见 kernel 末端).
 NPGS_NOISE_CLIP = 4.0
 
+# 噪声种子: 改这个值就换一张盘 (任意整数).
+# 透传到 npgsAccretionDiskNoiseCentered -> ... -> randomGrid(x,y,z,seed),
+# seed 作为整数偏移注入位置哈希, 换值即得不同的 lattice 格点布局.
+# 0 = 原始盘 (seed 未参与哈希时的等价态); 换任意非零整数即得新盘.
+NPGS_SEED = 1919810
 # 最终输出值硬上限: 对 density/temp/intensity 三个烘焙输出做 half-safe clip.
 # 运行时纹理以 half 存储, 上限 ~65504. 留余量取 65000.
 #   这一道兜底覆盖 noise_clip 管不到的情况 —— 当 params.z (LUT 基线) 本身很大时,
@@ -112,7 +117,8 @@ void prebake_disk_kernel(
     float npgs_contrast,
     float npgs_center_reference, float npgs_center_target, float npgs_amplitude,
     float npgs_noise_clip,
-    float output_clip
+    float output_clip,
+    int npgs_seed
 ) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total = r_out * z_out * phi_out;
@@ -144,7 +150,8 @@ void prebake_disk_kernel(
         noise_pos,
         npgs_octave_start, npgs_octave_end, npgs_contrast,
         npgs_center_reference, npgs_center_target, npgs_amplitude,
-        npgs_noise_clip
+        npgs_noise_clip,
+        npgs_seed
     )*__saturatef(6.9f-r_disk*0.2f);
 
     // ---- 硬件双线性采样 lut_physics ----
@@ -198,6 +205,7 @@ def main():
     print(f"    center_ref={NPGS_CENTER_REFERENCE}, center_target={NPGS_CENTER_TARGET}, amplitude={NPGS_AMPLITUDE}")
     print(f"    noise_clip={NPGS_NOISE_CLIP} (exp(clip*2.67)={np.exp(NPGS_NOISE_CLIP*2.67):.2e})")
     print(f"    output_clip={OUTPUT_CLIP} (half-safe, 末端硬限幅)")
+    print(f"    seed={NPGS_SEED} (0 = 原始盘; 非0 = 换一张盘)")
 
     # 3. 编译并运行
     kernel = cp.RawKernel(
@@ -221,6 +229,7 @@ def main():
             np.float32(NPGS_AMPLITUDE),
             np.float32(NPGS_NOISE_CLIP),
             np.float32(OUTPUT_CLIP),
+            np.int32(NPGS_SEED),
         )
     )
     cp.cuda.Device().synchronize()

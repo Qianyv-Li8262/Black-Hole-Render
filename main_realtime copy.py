@@ -54,7 +54,9 @@ trace_rays_kernel = module.get_function("blackholekernel")
 bloom_path = os.path.join(base_path, "postprocess_downup copy.cu")
 with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
-bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}',))
+# bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}',))
+# 编译开关: -DUSE_ACES 切换色调映射, -DUSE_S_CURVE 切换S曲线对比度
+bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}','-DUSE_ACES',))
 gaussH = bloom_module.get_function("gaussianBlurH")
 gaussW = bloom_module.get_function("gaussianBlurW")
 bloom = bloom_module.get_function("compositeBloom")
@@ -64,11 +66,11 @@ downsample2x = bloom_module.get_function("downsample2x")
 # 超参数与窗口初始化
 w, h = 1600,1000
 
-cam_pos = np.array([-4.81, -84.42, 13.58], dtype=np.float32)
+cam_pos = np.array([52.77, -77.00, 22.12], dtype=np.float32)
 
 
-cam_yaw, cam_pitch, cam_roll = -10.48, 0.04, -0.3
-focal_length = 3
+cam_yaw, cam_pitch, cam_roll = -11.15, -0.32, 0
+focal_length = 2.56
 
 move_speed = 0.05
 turn_speed = 0.01
@@ -126,7 +128,7 @@ block_x, block_y = 32, 8
 grid_x = (w + block_x - 1) // block_x
 grid_y = (h + block_y - 1) // block_y
 
-# 【最终输出静态线性缓冲】：1D uint8 数组，与 PBO 完全契合
+# 【最终输出静态线性缓冲】:1D uint8 数组,与 PBO 完全契合
 static_output_buf = cp.empty((h * w * 4), dtype=cp.uint8)
 
 # ==================== [录制直通后处理 CUDA Graph] ====================
@@ -135,7 +137,7 @@ capture_stream = cp.cuda.Stream(non_blocking=True)
 with capture_stream:
     capture_stream.begin_capture()
 
-    # 【重要改动】：直接把光追生成的纹理 frame_inter_tex 喂给提取器，摒弃断层的累加器
+    # 【重要改动】:直接把光追生成的纹理 frame_inter_tex 喂给提取器,摒弃断层的累加器
     bright(
         (grid_x, grid_y), (block_x, block_y),
         (
@@ -167,7 +169,7 @@ with capture_stream:
         )
         prev_tex_ptr = cp.uint64(tex_ptrs[i])
 
-    # 混合原图 (frame_inter_tex) 与 Bloom，并输出到线性静态缓冲
+    # 混合原图 (frame_inter_tex) 与 Bloom,并输出到线性静态缓冲
     bloom(
         (grid_x, grid_y), (block_x, block_y),
         (
@@ -209,7 +211,7 @@ def update_camera_vectors(yaw, pitch, roll):
 fwd, right, up = update_camera_vectors(cam_yaw, cam_pitch, cam_roll)
 
 t = 15.0
-
+vx,vy,vz=0,0,0
 # 创建高效异步的主渲染流
 render_stream = cp.cuda.Stream(non_blocking=True)
 
@@ -230,6 +232,15 @@ while not window.should_close():
     if glfw.KEY_C in window.key_pressed: cam_roll += turn_speed; camera_moved = True
     if glfw.KEY_G in window.key_pressed: focal_length /= focus_speed; camera_moved = True
     if glfw.KEY_T in window.key_pressed: focal_length *= focus_speed; camera_moved = True
+    if glfw.KEY_I in window.key_pressed: vx+=0.01
+    if glfw.KEY_K in window.key_pressed: vx-=0.01
+    if glfw.KEY_J in window.key_pressed: vy-=0.01
+    if glfw.KEY_L in window.key_pressed: vy+=0.01
+    if glfw.KEY_U in window.key_pressed: vz+=0.01
+    if glfw.KEY_N in window.key_pressed: vz-=0.01
+    if glfw.KEY_1 in window.key_pressed: vx=0
+    if glfw.KEY_2 in window.key_pressed: vy=0
+    if glfw.KEY_3 in window.key_pressed: vz=0
 
     if camera_moved:
         frames = 1
@@ -247,21 +258,21 @@ while not window.should_close():
                 cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
                 cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
                 cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
-                cp.float32(0.1574), cp.float32(0.5873), cp.float32(0),
+                cp.float32(vx), cp.float32(vy), cp.float32(vz),
                 cp.int32(w), cp.int32(h),
                 cp.float32(3.2), cp.float32(2.0), cp.float32(focal_length), cp.float32(0.1), cp.int32(2000), cp.int32(jitnum), cp.int32(frames)
             )
         )
-        # Graph读取 Surface，处理Bloom，输出给线性 uint8 静态数组
+        # Graph读取 Surface,处理Bloom,输出给线性 uint8 静态数组
         postprocess_graph.launch(stream=render_stream)
 
-    # 2. 必须同步！等待流水线走完，此时 static_output_buf 画面确立
+    # 2. 必须同步!等待流水线走完,此时 static_output_buf 画面确立
     render_stream.synchronize()
     
-    # 3. 映射 PBO，进行内存级极速复刻
+    # 3. 映射 PBO,进行内存级极速复刻
     current_frame_pbo = window.map_pbo()
     
-    # PBO与输出都是扁平的 1D uint8数组，直接 1:1 零开销倾倒过去
+    # PBO与输出都是扁平的 1D uint8数组,直接 1:1 零开销倾倒过去
     current_frame_pbo[:] = static_output_buf
     
     # 4. 解除映射并由 OpenGL 画在屏幕上
@@ -271,7 +282,7 @@ while not window.should_close():
     frames += 1
     
     if frames % 10 == 0 or camera_moved:
-        print(f"CamPos: [{cam_pos[0]:.2f}, {cam_pos[1]:.2f}, {cam_pos[2]:.2f}] | Pitch: {cam_pitch:.3f} | Yaw: {cam_yaw:.3f} | Focus: {focal_length:.3f}")
+        print(f"CamPos: [{cam_pos[0]:.2f}, {cam_pos[1]:.2f}, {cam_pos[2]:.2f}] | Pitch: {cam_pitch:.3f} | Yaw: {cam_yaw:.3f} | Roll: {cam_roll:.3f} | Focus: {focal_length:.3f} | V_vec: {vx:.2f} {vy:.2f} {vz:.2f}")
 
 window.destroy()
 print('Done.')

@@ -263,7 +263,7 @@ __device__ __forceinline__ float3 wavelength_to_rgb(float lambda_nm)
     const float3 uv_color = make_float3(0.55f, 0.0f, 1.0f); // 紫色
     const float3 ir_color = make_float3(1.0f, 0.0f, 0.0f);  // 红色
 
-    // 如果你觉得太亮，可以整体降一点：
+    // 如果你觉得太亮,可以整体降一点:
     const float outside_strength = 0.45f;
 
     float3 outside_uv = uv_color * outside_strength;
@@ -523,7 +523,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                 tdpd(r_disk, &td, &pd);
                 float td2, pd2;
                 tdpd(7.0f, &td2, &pd2);
-                float rot = pd * 250.0f / td + pd2 * time / td2;
+                float rot = pd * 1000.0f / td + pd2 * time / td2;
 
                 float phi_final = atan2f(temp.y, temp.x) + rot;
                 phi_final = fast_mod2pi(phi_final);
@@ -543,6 +543,17 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                 float kzg4 = k * parameters.z;
                 // float intensity_factor = 1.0f - __expf(-kzg4
                 // * kzg4);
+#ifdef OPACITY_CHANGE
+                // 冷区凝聚增强: T_eff 低 → opacity 乘 (1 + COLD_BOOST);T_eff 高 → 无加成
+                // T_COLD=2000K 以下满档,T_WARM=5000K 以上无加成,中间线性
+                // OPACITY_SCALE 把全局不透明度从 1.7 提到 3.0,整体更厚实
+                // COLD_BOOST=2.0: 冷区最多 3× 不透明度,塑造冷云团凝聚感
+                float T_eff = parameters.y * g;
+                float cold_factor = 1.0f + 2.0f * __saturatef((5000.0f - T_eff) / 3000.0f);
+                float step_opacity =
+                    parameters.x * 3.0f * uuu * uuu * __fmaf_rn(step_len, -__expf(-kzg4 * kzg4), step_len)
+                    / g * cold_factor;
+#else
                 // float temp_fade = __saturatef((parameters.y * g - 1400.0f) / 500.0f);
                 float temp_fade = 1.0f;
                 // float step_opacity = parameters.x * 1.7f *
@@ -550,6 +561,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                 float step_opacity =
                     parameters.x * 1.7f * uuu * uuu * __fmaf_rn(step_len, -__expf(-kzg4 * kzg4), step_len) / g;
                 step_opacity *= temp_fade;
+#endif
                 // float alpha = 1.0f - __expf(-step_opacity);
                 float temp_exp = -__expf(-step_opacity);
                 // float transmittance = 1.0f -
@@ -593,17 +605,17 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
             float4 bkgd = tex2D<float4>(tex_obj, tex_u, tex_v);
 #ifndef NO_BKGD_DOPPLER
             // 静止无穷远星空的频移因子。
-            // 你的 p_init 是反向追踪动量，所以这里和吸积盘 numerator 保持一致。
+            // 你的 p_init 是反向追踪动量,所以这里和吸积盘 numerator 保持一致。
             float g_sky = factor * gamma + p_init * e0;
             g_sky = fabsf(g_sky);
             // 避免极端数值。
-            // 波长本身已经 clamp 到 [380,780]，
-            // 但 g^3 亮度仍可能爆，所以这里可以给一个上限。
-            // 如果你希望完全物理夸张，可以删掉 fminf。
+            // 波长本身已经 clamp 到 [380,780],
+            // 但 g^3 亮度仍可能爆,所以这里可以给一个上限。
+            // 如果你希望完全物理夸张,可以删掉 fminf。
             g_sky = fmaxf(g_sky, 1e-4f);
             g_sky = fminf(g_sky, 20.0f);
-            // 如果 tex_obj 已经是 linear RGB，直接使用。
-            // 如果 tex_obj 是普通 sRGB 贴图，理论上应该先 sRGB -> linear。
+            // 如果 tex_obj 已经是 linear RGB,直接使用。
+            // 如果 tex_obj 是普通 sRGB 贴图,理论上应该先 sRGB -> linear。
             float3 bkgd_rgb = make_float3(bkgd.x, bkgd.y, bkgd.z);
             // 三谱线艺术化频移
             float3 shifted_rgb = rgb_three_line_frequency_shift(bkgd_rgb, g_sky);

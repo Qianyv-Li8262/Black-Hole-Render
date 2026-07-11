@@ -93,7 +93,12 @@ trace_rays_kernel = module.get_function("blackholekernel")
 bloom_path = os.path.join(base_path, bloom_kernel_path)
 with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
-bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}',))
+bloom_opts = ['-use_fast_math', f'-I{base_path}']
+if USE_ACES:
+    bloom_opts.append('-DUSE_ACES')
+if USE_S_CURVE:
+    bloom_opts.append('-DUSE_S_CURVE')
+bloom_module = cp.RawModule(code=bloom_source, options=tuple(bloom_opts))
 gaussH = bloom_module.get_function("gaussianBlurH")
 gaussW = bloom_module.get_function("gaussianBlurW")
 bloom = bloom_module.get_function("compositeBloom")
