@@ -27,3 +27,10 @@ temp/
 test_lambdargb.py
 testgmove.py
 config_offline.py
+*.ncu-rep
+output_frames_cloud_experiment/
+output_frames_cpu_test/
+output_frames_cpu_offline_config_test/
+test_cpu_render.py
+*.dll
+*.pyd

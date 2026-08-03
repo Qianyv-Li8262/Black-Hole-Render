@@ -187,7 +187,7 @@ extern "C" __global__ void compositeBloom(uchar4 *__restrict__ output, int outWi
     color.z = powf(color.z, 1.0f / 1.5f);
 #endif
 
-#ifdef USE_S_CURVE
+#ifndef NOT_USE_S_CURVE
     // 5. S 曲线对比度增强：mix(color, color*color*(3-2*color), 1.0)
     // 即 color = color * color * (3 - 2*color)
     float tmpR = color.x * color.x * (3.0f - 2.0f * color.x);

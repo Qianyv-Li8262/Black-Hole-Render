@@ -46,7 +46,7 @@ img_bgr = cv2.imread(os.path.join(base_path, skybox_path),
 if img_bgr is None:
     print(f"错误:无法加载天空盒!")
     exit()
-img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)*100
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)*33
 del img_bgr
 img_float = cp.asarray(img_rgb.astype(np.float16))
 del img_rgb
@@ -96,8 +96,8 @@ with open(bloom_path, "r", encoding="utf-8") as f:
 bloom_opts = ['-use_fast_math', f'-I{base_path}']
 if USE_ACES:
     bloom_opts.append('-DUSE_ACES')
-if USE_S_CURVE:
-    bloom_opts.append('-DUSE_S_CURVE')
+if NOT_USE_S_CURVE:
+    bloom_opts.append('-DNOT_USE_S_CURVE')
 bloom_module = cp.RawModule(code=bloom_source, options=tuple(bloom_opts))
 gaussH = bloom_module.get_function("gaussianBlurH")
 gaussW = bloom_module.get_function("gaussianBlurW")
@@ -193,7 +193,7 @@ frame_inter_tex,frame_inter_surf = create_texture_surface_union_2d(frame_interme
 del frame_intermediate_result
 current_frame_float = cp.empty((h * w * 4), dtype=cp.uint8)
 
-bloom_threshold = np.float32(1.7)
+bloom_threshold = np.float32(12)
 
 # block_x, block_y 由 config_offline 提供
 grid_x = (w + block_x - 1) // block_x
@@ -328,6 +328,7 @@ for frame_idx in range(1, total_frames + 1):
 
     elapsed = time.time() - start_time
     print(f'this frame, vx={vx}')
+    t_val+=0.033
 
 
     print(f"[Frame {frame_idx:05d}/{total_frames:05d}] {elapsed:.3f} s | "

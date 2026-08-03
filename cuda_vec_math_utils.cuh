@@ -63,3 +63,8 @@ __device__ __forceinline__ float3 fma_3s3(float3 a, float s, float3 b)
 {
     return make_float3(__fmaf_rn(a.x, s, b.x), __fmaf_rn(a.y, s, b.y), __fmaf_rn(a.z, s, b.z));
 }
+
+__device__ __forceinline__ float3 cross(float3 a, float3 b)
+{
+    return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
