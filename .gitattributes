@@ -1,0 +1,19 @@
+# All normal text files use LF
+* text=auto eol=lf
+
+# Windows-specific scripts may keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.exr  binary
+*.npy  binary
+*.npz  binary
+*.mp4  binary
+*.mov  binary
+*.zip  binary
+*.7z   binary
