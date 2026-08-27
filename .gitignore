@@ -3,7 +3,7 @@
 *.ptx
 *.npy
 !cache/colot_lut2.npy
-!cache/prebaked_sidk_noise_npgs.npy
+!cache/prebaked_disk_noise_npgs.npy
 *.bmp
 *.tif
 *.exr
