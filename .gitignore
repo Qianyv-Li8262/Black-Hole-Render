@@ -2,8 +2,8 @@
 *.jpg
 *.ptx
 *.npy
-!cache/color_lut2.npy
-!cache/disk_lut_for_mov_disk.npy
+!cache/colot_lut2.npy
+!cache/prebaked_sidk_noise_npgs.npy
 *.bmp
 *.tif
 *.exr
