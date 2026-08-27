@@ -2,38 +2,11 @@ import numpy as np
 import cupy as cp
 import cv2
 import time
-from cuda_tex import *
+from helpers.cuda_tex import *
 import os, sys, gc
-from config_offline import *
-
-def update_camera_physics_analytical(tau, r_start, dir_unit, fwd, right, up, d_tau=1.0):
-    M = 1.0
-    R_start = r_start + 1.0 + 0.25 / r_start
-    tau_max = (np.sqrt(2.0) / 3.0) * (R_start**1.5)
-
-    if tau >= tau_max:
-        r_next = 0.51
-        beta_mag = 0.999
-    else:
-        R = (R_start**1.5 - (1.5 * np.sqrt(2.0)) * tau) ** (2.0 / 3.0)
-        R = max(2.0001, R)
-        r_next = 0.5 * ((R - 1.0) + np.sqrt((R - 1.0)**2 - 1.0))
-        u_next = 1.0 / (2.0 * r_next)
-
-        beta_mag = np.sqrt(2.0 / r_next) / (1.0 + u_next)
-        beta_mag = min(0.999, beta_mag)
-
-    beta_global = -beta_mag * dir_unit
-    vx_next = np.dot(beta_global, fwd)
-    vy_next = np.dot(beta_global, right)
-    vz_next = np.dot(beta_global, up)
-
-    u_next = 1.0 / (2.0 * r_next)
-    factor = (1.0 + u_next) / (1.0 - u_next)
-    gamma = 1.0 / np.sqrt(1.0 - beta_mag**2)
-    dt = factor * gamma * d_tau
-    return r_next, vx_next, vy_next, vz_next, dt
-
+from cfg import offline as cfg
+from cfg.offline import *
+from helpers.render_manifest import finish_manifest, start_manifest
 
 base_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -41,7 +14,7 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 print('正在加载天空盒...')
 img_bgr = cv2.imread(os.path.join(base_path, skybox_path),
                      cv2.IMREAD_UNCHANGED)
-# img_bgr = cv2.imread(os.path.join(base_path, 'black.bmp'),
+# img_bgr = cv2.imread(os.path.join(base_path, 'assets', 'black.bmp'),
 #                      cv2.IMREAD_UNCHANGED)
 if img_bgr is None:
     print(f"错误:无法加载天空盒!")
@@ -77,7 +50,7 @@ print('正在编译 CUDA kernel...')
 _trace_src = os.path.join(base_path, kernel_path)
 with open(_trace_src, "r", encoding="utf-8") as f:
     cuda_source = f.read()
-compile_opts = ['-use_fast_math', f'-I{base_path}', '-lineinfo']
+compile_opts = ['-use_fast_math', f'-I{os.path.join(base_path, "krnls")}', '-lineinfo']
 if USE_RK4:
     compile_opts.append('-DUSE_RK4')
 if NO_DEPTH_JITTER:
@@ -93,7 +66,7 @@ trace_rays_kernel = module.get_function("blackholekernel")
 bloom_path = os.path.join(base_path, bloom_kernel_path)
 with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
-bloom_opts = ['-use_fast_math', f'-I{base_path}']
+bloom_opts = ['-use_fast_math', f'-I{os.path.join(base_path, "krnls")}']
 if USE_ACES:
     bloom_opts.append('-DUSE_ACES')
 if NOT_USE_S_CURVE:
@@ -108,10 +81,13 @@ downsample2x = bloom_module.get_function("downsample2x")
 print('  Kernel 编译完成')
 
 #-2.47,-4.47,-2.44     -2.61,-4.84,-0.70
-# w, h, total_frames, start_t, SSAA_COUNT 由 config_offline 提供
+# w, h, total_frames, start_t, SSAA_COUNT 由 cfg/offline.py 提供
 
 output_dir = os.path.join(base_path, output_dir)
 os.makedirs(output_dir, exist_ok=True)
+if globals().get('OPACITY_CHANGE', False):
+    print('提示: OPACITY_CHANGE 当前未传递给 CUDA kernel, 本次保持原有渲染效果。')
+manifest_path = start_manifest(output_dir, 'single_gpu', cfg)
 
 
 
@@ -134,18 +110,13 @@ tmp_blur_tex, tmp_blur_surf = create_texture_surface_union_2d(tmp_blur_buf, 4, (
 # focal_length = 96
 
 
-# cam_pos_init, cam_yaw/pitch/roll, focal_length, d_tau 由 config_offline 提供
+# cam_pos_init, cam_yaw/pitch/roll, focal_length, d_tau 由 cfg/offline.py 提供
 
 
-r0 = np.linalg.norm(cam_pos_init)
-dir_unit = cam_pos_init / r0
-
-r = r0
 t_val = start_t
-tau = 0.0
 
 
-# vx, vy, vz 由 config_offline 提供
+# vx, vy, vz 由 cfg/offline.py 提供
 world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
 fwd_x = np.cos(cam_yaw) * np.cos(cam_pitch)
 fwd_y = np.sin(cam_yaw) * np.cos(cam_pitch)
@@ -195,7 +166,7 @@ current_frame_float = cp.empty((h * w * 4), dtype=cp.uint8)
 
 bloom_threshold = np.float32(12)
 
-# block_x, block_y 由 config_offline 提供
+# block_x, block_y 由 cfg/offline.py 提供
 grid_x = (w + block_x - 1) // block_x
 grid_y = (h + block_y - 1) // block_y
 down_grids = [((w + block_x - 1) // block_x, (h + block_y - 1) // block_y) for w, h in down_resolutions]
@@ -291,7 +262,7 @@ print(f"\n开始离线渲染, 总计 {total_frames} 帧, 输出目录: {output_d
 
 render_stream = cp.cuda.Stream(non_blocking=True)
 for frame_idx in range(1, total_frames + 1):
-    cam_pos = r * dir_unit
+    cam_pos = cam_pos_init
     start_time = time.time()
     # temp_textures=[]
     
@@ -332,9 +303,10 @@ for frame_idx in range(1, total_frames + 1):
 
 
     print(f"[Frame {frame_idx:05d}/{total_frames:05d}] {elapsed:.3f} s | "
-          f"tau={tau:.1f} r={r:.4f} t={t_val:.2f} beta={np.sqrt(vx**2+vy**2+vz**2):.4f}")
+          f"t={t_val:.2f} beta={np.sqrt(vx**2+vy**2+vz**2):.4f}")
 
 
     gc.collect()
 
 print("\n渲染完毕!")
+finish_manifest(manifest_path, 'complete', {'frames_rendered': total_frames})

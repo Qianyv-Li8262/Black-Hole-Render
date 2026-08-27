@@ -14,7 +14,8 @@ import cv2
 import cupy as cp
 import numpy as np
 
-from cuda_tex import create_texture_array_2d, create_texture_array_3d, create_texture_surface_union_2d
+from helpers.cuda_tex import create_texture_array_2d, create_texture_array_3d, create_texture_surface_union_2d
+from helpers.render_manifest import finish_manifest, start_manifest
 
 
 # -----------------------------------------------------------------------------
@@ -44,11 +45,11 @@ STEP = 0.04
 MAXSTEP = 4000
 
 # Files, relative to this script.
-SKYBOX_PATH = "white.bmp"
-CLOUD_DENSITY_PATH = "accretion_disk_lut.npy"
-COLOR_LUT_PATH = "color_lut2.npy"
-KERNEL_PATH = "blackholekernel3_prebaked copy - \u526f\u672c.cu"
-BLOOM_KERNEL_PATH = "postprocess_downup copy.cu"
+SKYBOX_PATH = "assets/white.bmp"
+CLOUD_DENSITY_PATH = "cache/accretion_disk_lut.npy"
+COLOR_LUT_PATH = "cache/color_lut2.npy"
+KERNEL_PATH = "krnls/cloud.cu"
+BLOOM_KERNEL_PATH = "krnls/bloom.cu"
 OUTPUT_DIR = "output_frames_cloud_experiment"
 
 # Texture exposure / storage.
@@ -122,7 +123,7 @@ def compile_trace_kernel(base_path: str):
     with open(path, "r", encoding="utf-8") as f:
         source = f.read()
 
-    opts = ["-use_fast_math", f"-I{base_path}", "-lineinfo"]
+    opts = ["-use_fast_math", f"-I{os.path.join(base_path, 'krnls')}", "-lineinfo"]
     if NO_DEPTH_JITTER:
         opts.append("-DNO_DEPTH_JITTER")
     if RAND_SAMP_DISK:
@@ -139,7 +140,7 @@ def compile_bloom_kernels(base_path: str):
     with open(path, "r", encoding="utf-8") as f:
         source = f.read()
 
-    opts = ["-use_fast_math", f"-I{base_path}"]
+    opts = ["-use_fast_math", f"-I{os.path.join(base_path, 'krnls')}"]
     if USE_ACES:
         opts.append("-DUSE_ACES")
     if NOT_USE_S_CURVE:
@@ -322,6 +323,7 @@ def main() -> None:
     base_path = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(base_path, OUTPUT_DIR)
     os.makedirs(output_dir, exist_ok=True)
+    manifest_path = start_manifest(output_dir, "cloud", globals())
 
     print("Loading skybox texture...")
     sky_tex = load_sky_texture(base_path)
@@ -399,6 +401,7 @@ def main() -> None:
         gc.collect()
 
     print("Cloud experiment render complete.")
+    finish_manifest(manifest_path, "complete", {"frames_rendered": TOTAL_FRAMES})
     _ = trace_module
 
 

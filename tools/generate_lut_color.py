@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 def temperature_to_color(temp):
     t = temp / 100.0
@@ -64,5 +65,8 @@ for i in range(2000):
     # r,g,b=temperature_to_color(t)
     r,g,b = planck_discrete_color(t)
     u[0,i,:]=(r,g,b)
-np.save('color_lut2.npy', u)
+base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+cache_dir = os.path.join(base_path, 'cache')
+os.makedirs(cache_dir, exist_ok=True)
+np.save(os.path.join(cache_dir, 'color_lut2.npy'), u)
 print("LUT 生成完成，形状:", u.shape)

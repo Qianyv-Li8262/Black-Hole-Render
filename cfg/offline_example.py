@@ -1,6 +1,6 @@
 """
 离线渲染配置文件(示例)
-复制为 config_offline.py 并修改为你自己的参数,该文件已被 .gitignore 忽略。
+复制为 cfg/offline.py 并修改为你自己的参数,该文件已被 .gitignore 忽略。
 """
 
 import numpy as np
@@ -36,17 +36,17 @@ SSAA_COUNT = 256  # 每像素采样数
 # ========== 模拟时间 ==========
 start_t      = 20.5   # 起始坐标时
 total_frames = 1      # 总帧数
-d_tau        = 0.1    # 固有时间步长(解析下落模型)
+d_tau        = 0.1    # 多帧渲染的场景时间步长
 
 # ========== 多普勒 / 相机速度 (beta) ==========
 vx, vy, vz = 0.1574, 0.5873, 0
 
 # ========== 文件路径(相对于项目根目录) ==========
-skybox_path         = 'starmap_random_2020_16k.exr'
-prebaked_disk_path  = 'prebaked_disk_noise_npgs.npy'
-color_lut_path      = 'color_lut2.npy'
-kernel_path         = 'blackholekernel3_prebaked copy.cu'
-bloom_kernel_path   = 'postprocess_downup copy.cu'
+skybox_path         = 'assets/starmap_random_2020_16k.exr'
+prebaked_disk_path  = 'cache/prebaked_disk_noise_npgs.npy'
+color_lut_path      = 'cache/color_lut2.npy'
+kernel_path         = 'krnls/disk.cu'
+bloom_kernel_path   = 'krnls/bloom.cu'
 output_dir          = 'output_frames'
 
 # ========== 编译开关 ==========
@@ -55,3 +55,6 @@ USE_RK4           = False
 NO_DEPTH_JITTER   = True
 RAND_SAMP_DISK    = True
 NO_BKGD_DOPPLER   = False
+OPACITY_CHANGE    = False  # 当前渲染路径暂不启用；设为 True 时会打印提示
+USE_ACES          = True
+NOT_USE_S_CURVE   = False

@@ -1,4 +1,4 @@
-"""Build the CUDA-independent pybind11 CPU renderer extension in this directory."""
+"""Build the CUDA-independent pybind11 CPU renderer extension."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import sys
 import sysconfig
 
 
-ROOT = Path(__file__).resolve().parent
-SOURCE = ROOT / "cpu_render.cpp"
-OUTPUT = ROOT / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "cpu" / "cpu_render.cpp"
 BUILD_DIR = ROOT / "build"
+OUTPUT = BUILD_DIR / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
 
 
 def main() -> None:
@@ -21,9 +21,15 @@ def main() -> None:
     if compiler is None:
         raise SystemExit("clang++ was not found. Install LLVM or set CXX to a C++17 compiler.")
 
-    pybind11_include = Path(
-        os.environ.get("PYBIND11_INCLUDE_DIR", sys.prefix + "/Lib/site-packages/pybind11/include")
-    )
+    include_override = os.environ.get("PYBIND11_INCLUDE_DIR")
+    if include_override:
+        pybind11_include = Path(include_override)
+    else:
+        try:
+            import pybind11
+        except ModuleNotFoundError as error:
+            raise SystemExit("pybind11 was not found. Install it with `pip install pybind11`.") from error
+        pybind11_include = Path(pybind11.get_include())
     if not (pybind11_include / "pybind11" / "pybind11.h").is_file():
         raise SystemExit(
             "pybind11 headers were not found. Set PYBIND11_INCLUDE_DIR to the directory containing pybind11/."

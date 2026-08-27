@@ -1,4 +1,4 @@
-"""Multi-GPU frame-parallel entry point for the fixed-camera renderer.
+"""GPU/CPU frame-parallel entry point for the fixed-camera renderer.
 
 Each GPU owns one renderer instance and claims the lowest-numbered pending
 frame under a lock. Frames are independent: camera pose and velocity stay
@@ -26,10 +26,11 @@ except ModuleNotFoundError:
     # GPU runtime is not installed. main() still requires CuPy to render.
     cp = None
 
-import config_offline as cfg
+from cfg import offline as cfg
+from helpers.render_manifest import finish_manifest, start_manifest
 
 if cp is not None:
-    from cuda_tex import (
+    from helpers.cuda_tex import (
         create_texture_array_2d,
         create_texture_array_3d,
         create_texture_surface_union_2d,
@@ -160,7 +161,8 @@ class GpuRenderer:
         self._record_postprocess_graph()
 
     def _compile_kernels(self) -> None:
-        compile_opts = ["-use_fast_math", f"-I{BASE_PATH}", "-lineinfo"]
+        kernel_file = BASE_PATH / cfg.kernel_path
+        compile_opts = ["-use_fast_math", f"-I{BASE_PATH / 'krnls'}", "-lineinfo"]
         if cfg.USE_RK4:
             compile_opts.append("-DUSE_RK4")
         if cfg.NO_DEPTH_JITTER:
@@ -170,12 +172,13 @@ class GpuRenderer:
         if cfg.NO_BKGD_DOPPLER:
             compile_opts.append("-DNO_BKGD_DOPPLER")
 
-        trace_source = (BASE_PATH / cfg.kernel_path).read_text(encoding="utf-8")
+        trace_source = kernel_file.read_text(encoding="utf-8")
         trace_module = cp.RawModule(code=trace_source, options=tuple(compile_opts))
         self.trace_rays_kernel = trace_module.get_function("blackholekernel")
 
-        bloom_source = (BASE_PATH / cfg.bloom_kernel_path).read_text(encoding="utf-8")
-        bloom_opts = ["-use_fast_math", f"-I{BASE_PATH}"]
+        bloom_file = BASE_PATH / cfg.bloom_kernel_path
+        bloom_source = bloom_file.read_text(encoding="utf-8")
+        bloom_opts = ["-use_fast_math", f"-I{BASE_PATH / 'krnls'}"]
         if cfg.USE_ACES:
             bloom_opts.append("-DUSE_ACES")
         if cfg.NOT_USE_S_CURVE:
@@ -333,13 +336,13 @@ class CpuRenderer:
     """One frame-parallel CPU renderer that mirrors the active GPU pipeline."""
 
     def __init__(self, cpu_cores: int, time_step: float, output_dir: Path):
-        import cpu_render
+        import render_cpu as cpu_render
 
         self.cpu = cpu_render
         self.cpu_cores = cpu_cores
         self.time_step = np.float32(time_step)
         self.output_dir = output_dir
-        if not (BASE_PATH / "cpu_render.dll").is_file():
+        if not cpu_render.native_extension_exists():
             cpu_render.build_native_extension()
         self._initialize()
 
@@ -506,7 +509,7 @@ def main() -> int:
             parser.error(f"--cpu-cores must be in [1, {available_cores}]")
 
     if cp is None:
-        raise RuntimeError("CuPy is required to run main_multi_gpu.py")
+        raise RuntimeError("CuPy is required to run render_hybrid.py")
     gpu_count = cp.cuda.runtime.getDeviceCount()
     if gpu_count < 1:
         raise RuntimeError("No CUDA GPU is visible to CuPy")
@@ -516,6 +519,18 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("CUPY_CACHE_DIR", str(BASE_PATH / ".cupy_cache"))
     scheduler = FrameScheduler(cfg.total_frames, output_dir, args.overwrite)
+    if getattr(cfg, "OPACITY_CHANGE", False):
+        print("Note: OPACITY_CHANGE is not passed to the CUDA kernel; existing output is preserved.")
+    manifest_path = start_manifest(
+        output_dir,
+        "hybrid",
+        cfg,
+        {
+            "arguments": vars(args),
+            "gpu_ids": gpu_ids,
+            "cpu_accelerator_cores": args.cpu_cores if args.use_cpu else 0,
+        },
+    )
     cpu_description = f"; CPU worker={args.cpu_cores} cores" if args.use_cpu else ""
     print(f"Using GPUs {gpu_ids}{cpu_description}; {scheduler.summary()}; time step={args.time_step}")
 
@@ -542,6 +557,11 @@ def main() -> int:
 
     summary = scheduler.summary()
     print(f"Render summary: {summary}")
+    finish_manifest(
+        manifest_path,
+        "failed" if scheduler.errors else "complete",
+        {"summary": summary},
+    )
     if scheduler.errors:
         for worker_name, frame_idx, error in scheduler.errors:
             print(f"\n{worker_name}, frame {frame_idx:05d} error:\n{error}", file=sys.stderr)

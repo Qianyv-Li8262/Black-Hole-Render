@@ -1,6 +1,6 @@
-"""CPU fallback for the black-hole ray tracer and post-processing graph.
+"""CPU accelerator for the black-hole ray tracer and post-processing graph.
 
-Build the local pybind11 extension once with ``python build_cpu_render.py``.
+Build the local pybind11 extension once with ``python tools/build_cpu_render.py``.
 The native module accepts NumPy arrays directly: background ``(H, W, 3|4)``,
 disk LUT ``(R, Z, Phi, 3|4)``, and colour LUT ``(H, W, 3|4)``.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntFlag
 import importlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -36,7 +37,7 @@ class RenderFlag(IntFlag):
 
 @dataclass(frozen=True)
 class PostprocessParams:
-    """The runtime values passed to ``postprocess_downup copy.cu``."""
+    """The runtime values passed to ``krnls/bloom.cu``."""
 
     bloom_threshold: float = 12.0
     use_aces: bool = True
@@ -95,16 +96,22 @@ class RenderParams:
 
 
 _ROOT = Path(__file__).resolve().parent
-_EXTENSION_PATH = _ROOT / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
+_EXTENSION_PATH = _ROOT / "build" / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
 _NATIVE_MODULE: ModuleType | None = None
 
 
 def build_native_extension() -> Path:
-    """Compile ``cpu_render.cpp`` into the pybind11 extension consumed by this module."""
+    """Compile ``cpu/cpu_render.cpp`` into the pybind11 extension consumed by this module."""
 
-    subprocess.run([sys.executable, str(_ROOT / "build_cpu_render.py")], cwd=_ROOT, check=True)
+    subprocess.run([sys.executable, str(_ROOT / "tools" / "build_cpu_render.py")], cwd=_ROOT, check=True)
     importlib.invalidate_caches()
     return _EXTENSION_PATH
+
+
+def native_extension_exists() -> bool:
+    """Return whether the pybind11 ``cpu_render_native`` module is built."""
+
+    return _EXTENSION_PATH.is_file()
 
 
 def _native_module() -> ModuleType:
@@ -112,11 +119,17 @@ def _native_module() -> ModuleType:
     if _NATIVE_MODULE is None:
         if not _EXTENSION_PATH.exists():
             raise RuntimeError(
-                f"{_EXTENSION_PATH.name} has not been built. Run `python build_cpu_render.py` "
-                "or call cpu_render.build_native_extension() first."
+                f"{_EXTENSION_PATH.name} has not been built. Run `python tools/build_cpu_render.py` "
+                "or call render_cpu.build_native_extension() first."
             )
-        module_name = f"{__package__}.cpu_render_native" if __package__ else "cpu_render_native"
-        _NATIVE_MODULE = importlib.import_module(module_name)
+        module_name = "cpu_render_native"
+        spec = importlib.util.spec_from_file_location(module_name, _EXTENSION_PATH)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Unable to load pybind11 extension: {_EXTENSION_PATH}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        _NATIVE_MODULE = module
     return _NATIVE_MODULE
 
 
@@ -252,7 +265,7 @@ CPU_TEST_SSAA = 16
 
 
 def _camera_vectors(yaw: float, pitch: float, roll: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Use the same camera-basis construction as main_new_bloom copy.py."""
+    """Use the same camera-basis construction as render_single.py."""
 
     world_up = np.array((0.0, 0.0, 1.0), dtype=np.float32)
     forward = np.array(
@@ -268,7 +281,7 @@ def _camera_vectors(yaw: float, pitch: float, roll: float) -> tuple[np.ndarray, 
 
 
 def _load_background_rgba(path: Path) -> np.ndarray:
-    """Load the configured skybox exactly as main_new_bloom copy.py does."""
+    """Load the configured skybox exactly as render_single.py does."""
 
     try:
         import cv2
@@ -294,13 +307,13 @@ def _load_background_rgba(path: Path) -> np.ndarray:
 
 
 def _as_gpu_half_texture(texture: np.ndarray) -> np.ndarray:
-    """Match the float16 texture uploads in main_new_bloom copy.py."""
+    """Match the float16 texture uploads in render_single.py."""
 
     return np.ascontiguousarray(np.asarray(texture, dtype=np.float16), dtype=np.float32)
 
 
 def run_full_resolution_low_ssaa_test() -> Path:
-    """Render and save one full-resolution config_offline.py frame at SSAA 1."""
+    """Render and save one full-resolution cfg/offline.py frame at low SSAA."""
 
     try:
         import cv2
@@ -309,7 +322,7 @@ def run_full_resolution_low_ssaa_test() -> Path:
     if not _EXTENSION_PATH.exists():
         build_native_extension()
 
-    import config_offline as config
+    from cfg import offline as config
 
     test_width = int(config.w)
     test_height = int(config.h)
@@ -325,7 +338,7 @@ def run_full_resolution_low_ssaa_test() -> Path:
         flags |= RenderFlag.DEPTH_JITTER
     if getattr(config, "RAND_SAMP_DISK", False):
         flags |= RenderFlag.RAND_SAMP_DISK
-    # config_offline.py exposes OPACITY_CHANGE, but main_new_bloom copy.py
+    # cfg/offline.py exposes OPACITY_CHANGE, but render_single.py
     # never appends -DOPACITY_CHANGE to compile_opts.  The GPU therefore uses
     # the ordinary 1.7x opacity branch; keep the CPU path identical.
     if not getattr(config, "NO_BKGD_DOPPLER", False):
@@ -384,7 +397,7 @@ def run_full_resolution_low_ssaa_test() -> Path:
         "tile_size": list(CPU_TEST_TILE_SIZE),
         "maxstep": params.maxstep,
         "bloom_threshold": postprocess.bloom_threshold,
-        "config": "config_offline.py",
+        "config": "cfg/offline.py",
         "image": image_path.name,
     }
     report_path = output_dir / f"{stem}.json"

@@ -2,6 +2,7 @@ import numpy as np
 import cupy as cp
 import matplotlib.pyplot as plot
 import matplotlib.image as image
+import os
 generation_source=r'''
 __device__ __forceinline__ float fract(float x) { 
     return x - floorf(x); 
@@ -224,6 +225,9 @@ array=cp.empty((50,1500,4),dtype=cp.float32)
 kernel = cp.RawKernel(generation_source, 'generateLutPhysics')
 kernel((293,),(256,),(array,cp.int32(1500),cp.int32(50),cp.float32(2.5),cp.float32(4.9495),cp.float32(35.0)))
 np_arr = array.get()
-np.save('disk_lut_for_mov_disk.npy', np_arr)
+base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+cache_dir = os.path.join(base_path, 'cache')
+os.makedirs(cache_dir, exist_ok=True)
+np.save(os.path.join(cache_dir, 'disk_lut_for_mov_disk.npy'), np_arr)
 print("LUT 生成完成，形状:", np_arr.shape)
 print(np_arr[5:10,110:120,:])

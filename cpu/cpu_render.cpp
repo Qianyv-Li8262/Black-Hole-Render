@@ -1,8 +1,8 @@
-// CPU implementation of blackholekernel3_prebaked copy.cu.
+// CPU implementation of krnls/disk.cu.
 //
 // This file is built as a pybind11 extension.  The public functions accept
 // NumPy arrays directly, avoiding the duplicated ctypes ABI declarations that
-// used to live in cpu_render.py.
+// used to live in render_cpu.py.
 
 #include <algorithm>
 #include <atomic>
@@ -739,7 +739,7 @@ static void extract_bright(const Texture2D &source, FloatImage &destination, flo
     parallel_rows(destination.height, workers, [&](int y) {
         for (int x = 0; x < destination.width; ++x) {
             // Kept intentionally as x / width rather than (x + 0.5) / width,
-            // matching extractBright in postprocess_downup copy.cu.
+            // matching extractBright in krnls/bloom.cu.
             const float4 color =
                 source.sample(static_cast<float>(x) / destination.width, static_cast<float>(y) / destination.height);
             const float luma = 0.2126f * color.x + 0.7152f * color.y + 0.0722f * color.z;

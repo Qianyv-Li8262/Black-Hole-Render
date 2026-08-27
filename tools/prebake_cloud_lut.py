@@ -7,7 +7,7 @@ import os
 #   extern "C" __global__ void get_cloud_density(...)
 #   extern "C" __global__ void compute_density_gradient(...)
 # ============================================================
-CUDA_FILE = r"./prebake_cloud_params.cu"  # 例如：r"./cloud_density.cu"
+CUDA_FILE = "krnls/prebake_cloud.cu"
 
 # LUT 空间尺寸，数组最终 shape 为：
 # (phi_samples, z_samples, r_samples, 4)
@@ -30,18 +30,17 @@ grid = (
     (z_samples + block[1] - 1) // block[1],
     (r_samples + block[2] - 1) // block[2],
 )
-base_path = os.path.dirname(os.path.abspath(__file__))
+base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+cuda_path = os.path.join(base_path, CUDA_FILE)
 # 读取 CUDA 源码。
-with open(CUDA_FILE, "r", encoding="utf-8") as f:
+with open(cuda_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
 # 编译 CUDA RawModule。
-# 若 cuda_noise.cuh 与 CUDA_FILE 位于同一目录，通常可以正常找到。
-# 若不在同一目录，需要通过 options 增加 include 路径，例如：
-# options=("-I/path/to/cuda/includes",)
+# cuda_noise.cuh 位于 krnls/。
 module = cp.RawModule(
     code=cuda_source,
-    options=("--std=c++14",f'-I{base_path}'),
+    options=("--std=c++14", f'-I{os.path.join(base_path, "krnls")}'),
     name_expressions=(
         "get_cloud_density",
         "compute_density_gradient",
@@ -99,8 +98,11 @@ cp.cuda.Stream.null.synchronize()
 # 转回 NumPy 并保存为 .npy。
 output_numpy = cp.asnumpy(output.transpose(2, 1, 0, 3).astype(cp.float16))
 
-np.save("accretion_disk_lut.npy", output_numpy)
+cache_dir = os.path.join(base_path, "cache")
+os.makedirs(cache_dir, exist_ok=True)
+output_path = os.path.join(cache_dir, "accretion_disk_lut.npy")
+np.save(output_path, output_numpy)
 
-print("Saved:", "accretion_disk_lut.npy")
+print("Saved:", output_path)
 print("Shape:", output_numpy.shape)
 print("Dtype:", output_numpy.dtype)

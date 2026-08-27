@@ -7,14 +7,14 @@ import numpy as np
 import cupy as cp
 import cv2
 import time
-from cuda_tex import *
+from helpers.cuda_tex import *
 import glfw
 from cupyx.scipy.ndimage import gaussian_filter
 import os, sys
-from zero_copy_window import ZeroCopyWindow
+from helpers.zero_copy_window import ZeroCopyWindow
 
 base_path = os.path.dirname(os.path.abspath(__file__))
-img_file_path = os.path.join(base_path, 'starmap_random_2020_16k.exr') 
+img_file_path = os.path.join(base_path, 'assets', 'starmap_random_2020_16k.exr')
 img_bgr = cv2.imread(img_file_path, cv2.IMREAD_UNCHANGED)   
 
 if img_bgr is None:
@@ -29,12 +29,12 @@ img_rgba[:, :, :3] = img_float
 tex_handle = create_texture_array_2d(img_rgba, 4, (1, 1, 1, 1), True)
 
 print('正在加载预烘焙吸积盘纹理...')
-prebaked_data = np.load(os.path.join(base_path, 'prebaked_disk_noise_npgs.npy'))
+prebaked_data = np.load(os.path.join(base_path, 'cache', 'prebaked_disk_noise_npgs.npy'))
 ishalf = True
 tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float16), 4, (1, 1, 1, 1, 1), is_half=ishalf)
 del prebaked_data
 
-colorlut_file_path = os.path.join(base_path, 'color_lut2.npy')
+colorlut_file_path = os.path.join(base_path, 'cache', 'color_lut2.npy')
 lut_color = cp.load(colorlut_file_path).astype(cp.float16)
 
 lut_rgba = cp.zeros((*lut_color.shape[:2], 4), dtype=cp.float16)
@@ -42,21 +42,21 @@ lut_rgba[:, :, :3] = lut_color
 tex_handle_color = create_texture_array_2d(lut_rgba, 4, (1, 1, 1, 1), True)
 
 print('正在编译 CUDA kernel...')
-kernel_path = os.path.join(base_path, "blackholekernel3_prebaked copy.cu")
+kernel_path = os.path.join(base_path, "krnls", "disk.cu")
 # kernel_path = os.path.join(base_path, "glm_wish_coding_try1.cu")
 with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
 include_dir = os.path.dirname(os.path.abspath(kernel_path)) 
-module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{base_path}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK'))
+module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{os.path.join(base_path, "krnls")}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK'))
 trace_rays_kernel = module.get_function("blackholekernel")
 
-bloom_path = os.path.join(base_path, "postprocess_downup copy.cu")
+bloom_path = os.path.join(base_path, "krnls", "bloom.cu")
 with open(bloom_path, "r", encoding="utf-8") as f:
     bloom_source = f.read()
-# bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}',))
+# bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{os.path.join(base_path, "krnls")}',))
 # 编译开关: -DUSE_ACES 切换色调映射, -DUSE_S_CURVE 切换S曲线对比度
-bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{base_path}','-DUSE_ACES',))
+bloom_module = cp.RawModule(code=bloom_source, options=('-use_fast_math',f'-I{os.path.join(base_path, "krnls")}','-DUSE_ACES',))
 gaussH = bloom_module.get_function("gaussianBlurH")
 gaussW = bloom_module.get_function("gaussianBlurW")
 bloom = bloom_module.get_function("compositeBloom")

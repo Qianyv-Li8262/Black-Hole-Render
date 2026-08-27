@@ -8,8 +8,8 @@
   - exp(noise) 物理映射完全保留 (绝热锁死, 不动)
   - noise 中心在 0 (即 exp(noise) 中心在 1), 幅度可调, 不改变原有物理趋势
 
-输出文件: prebaked_disk_noise_npgs.npy
-(原 prebaked_disk_noise.npy 保持不变, 运行时需手动切换加载路径)
+输出文件: cache/prebaked_disk_noise_npgs.npy
+(原 cache/prebaked_disk_noise.npy 保持不变, 运行时需手动切换加载路径)
 """
 
 import numpy as np
@@ -182,11 +182,11 @@ void prebake_disk_kernel(
 
 
 def main():
-    base_path = os.path.dirname(os.path.abspath(__file__))
+    base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     # 1. 加载 lut_physics 并创建纹理
-    print("加载 disk_lut_for_mov_disk.npy ...")
-    lut = np.load(os.path.join(base_path, 'disk_lut_for_mov_disk.npy')).astype(np.float32)
+    print("加载 cache/disk_lut_for_mov_disk.npy ...")
+    lut = np.load(os.path.join(base_path, 'cache', 'disk_lut_for_mov_disk.npy')).astype(np.float32)
     print(f"  尺寸: {lut.shape}")
 
     lut_gpu = cp.asarray(lut)
@@ -210,7 +210,7 @@ def main():
     # 3. 编译并运行
     kernel = cp.RawKernel(
         KERNEL_CODE, 'prebake_disk_kernel',
-        options=(f'-I{base_path}',)
+        options=(f'-I{os.path.join(base_path, "krnls")}',)
     )
 
     block = 256
@@ -236,10 +236,12 @@ def main():
 
     # 4. 保存
     result = output_flat.get().reshape(R_SAMPLES, Z_SAMPLES, PHI_SAMPLES, 4)
-    out_path = os.path.join(base_path, 'prebaked_disk_noise_npgs.npy')
+    cache_dir = os.path.join(base_path, 'cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    out_path = os.path.join(cache_dir, 'prebaked_disk_noise_npgs.npy')
     np.save(out_path, result)
 
-    print(f"\n已保存到 prebaked_disk_noise_npgs.npy")
+    print(f"\n已保存到 {out_path}")
     print(f"  Shape:  {result.shape}")
     print(f"  dtype:  {result.dtype}")
     print(f"  density   范围: [{result[..., 0].min():.4f}, {result[..., 0].max():.4f}]")

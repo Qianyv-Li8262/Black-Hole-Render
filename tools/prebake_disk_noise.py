@@ -123,11 +123,11 @@ void prebake_disk_kernel(
 
 
 def main():
-    base_path = os.path.dirname(os.path.abspath(__file__))
+    base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     # 1. 加载 lut_physics 并创建纹理
-    print("加载 disk_lut_for_mov_disk.npy ...")
-    lut = np.load(os.path.join(base_path, 'disk_lut_for_mov_disk.npy')).astype(np.float32)
+    print("加载 cache/disk_lut_for_mov_disk.npy ...")
+    lut = np.load(os.path.join(base_path, 'cache', 'disk_lut_for_mov_disk.npy')).astype(np.float32)
     print(f"  尺寸: {lut.shape}")
 
     # 转置为 (h, w, c) = (z_pix, r_pix, 4) 适配 create_2d_texture
@@ -146,7 +146,7 @@ def main():
     # 3. 编译并运行
     kernel = cp.RawKernel(
         KERNEL_CODE, 'prebake_disk_kernel',
-        options=(f'-I{base_path}',)
+        options=(f'-I{os.path.join(base_path, "krnls")}',)
     )
 
     block = 256
@@ -165,10 +165,12 @@ def main():
 
     # 4. 保存
     result = output_flat.get().reshape(R_SAMPLES, Z_SAMPLES, PHI_SAMPLES, 4)
-    out_path = os.path.join(base_path, 'prebaked_disk_noise.npy')
+    cache_dir = os.path.join(base_path, 'cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    out_path = os.path.join(cache_dir, 'prebaked_disk_noise.npy')
     np.save(out_path, result)
 
-    print(f"\n已保存到 prebaked_disk_noise.npy")
+    print(f"\n已保存到 {out_path}")
     print(f"  Shape:  {result.shape}")
     print(f"  dtype:  {result.dtype}")
     print(f"  density   范围: [{result[..., 0].min():.4f}, {result[..., 0].max():.4f}]")
