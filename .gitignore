@@ -2,7 +2,7 @@
 *.jpg
 *.ptx
 *.npy
-!cache/colot_lut2.npy
+!cache/color_lut2.npy
 !cache/prebaked_disk_noise_npgs.npy
 *.bmp
 *.tif
