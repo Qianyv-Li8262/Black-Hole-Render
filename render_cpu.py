@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 """CPU accelerator for the black-hole ray tracer and post-processing graph.
 
 Build the local pybind11 extension once with ``python tools/build_cpu_render.py``.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 """
 预烘焙吸积盘噪声纹理 (NPGS 风格噪声版本)。
 

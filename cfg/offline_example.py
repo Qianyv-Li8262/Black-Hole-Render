@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 """
 离线渲染配置文件(示例)
 复制为 cfg/offline.py 并修改为你自己的参数,该文件已被 .gitignore 忽略。

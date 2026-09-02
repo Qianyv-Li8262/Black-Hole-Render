@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 """Build the CUDA-independent pybind11 CPU renderer extension."""
 
 from __future__ import annotations

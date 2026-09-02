@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 '''
 This script is only for finding a good position to make pictures.
 I don't know the way to do temporal antialiasing(I'm a noob!)when the disk is moving so I give up real-time rendering and turned to offline rendering.

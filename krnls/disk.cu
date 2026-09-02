@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 #include "cuda_vec_math_utils.cuh"
 
 __device__ __forceinline__ float3 boost(float3 b, float3 vec, float gamma)

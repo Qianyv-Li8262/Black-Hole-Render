@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 // Sixteen-ray AVX-512 implementation. Texture gathers and transcendental
 // approximations remain fully vectorized, matching the public AVX2 algorithm.
 

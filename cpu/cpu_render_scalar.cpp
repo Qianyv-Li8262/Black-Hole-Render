@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 // Pure scalar reference implementation of the black-hole ray kernel.
 
 #include "cpu_render_common.h"

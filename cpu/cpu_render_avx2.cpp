@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 // Eight-ray AVX2 implementations. The accurate path keeps scalar texture and
 // transcendental work; the experimental path vectorizes those operations too.
 

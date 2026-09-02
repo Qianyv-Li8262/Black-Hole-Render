@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 #pragma once
 
 // #include <cuda_runtime.h>

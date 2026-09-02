@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 """Compare the scalar and forced full-AVX2 ray paths with one fixed workload."""
 
 from __future__ import annotations

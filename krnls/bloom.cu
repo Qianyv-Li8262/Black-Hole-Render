@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 #include "cuda_vec_math_utils.cuh"
 extern "C" __global__ void gaussianBlurH(cudaSurfaceObject_t out, int width, int height, cudaTextureObject_t tex,
                                          float scale)
@@ -290,4 +292,3 @@ extern "C" __global__ void debugOutput(uchar4 *output, int w, int h, cudaTexture
     output[y * w + x] = make_uchar4((unsigned char)(color.x * scale), (unsigned char)(color.y * scale),
                                     (unsigned char)(color.z * scale), 255);
 }
-

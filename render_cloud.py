@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 """Offline entry point for the cloud-volume black hole experiment.
 
 This is intentionally self-contained: paths, camera, render settings, and compile

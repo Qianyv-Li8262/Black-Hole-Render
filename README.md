@@ -24,6 +24,13 @@ assets/starmap_random_2020_16k.exr
 Please keep the NASA SVS attribution when redistributing screenshots or derived
 material that uses this background.
 
+### License
+
+The repository's source code is licensed under the GNU General Public License,
+version 3 or later (`GPL-3.0-or-later`); see [LICENSE](LICENSE). This does not
+apply to the NASA SVS assets in `assets/`, which retain their original terms and
+required attribution.
+
 ### Offline rendering
 
 The normal offline path does not require a system-wide CUDA Toolkit installation.

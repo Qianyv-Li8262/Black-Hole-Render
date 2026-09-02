@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 """GPU/CPU frame-parallel entry point for the fixed-camera renderer.
 
 Each GPU owns one renderer instance and claims the lowest-numbered pending
