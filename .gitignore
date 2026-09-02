@@ -4,6 +4,7 @@
 *.npy
 !cache/color_lut2.npy
 !cache/prebaked_disk_noise_npgs.npy
+!docs/images/*.png
 *.bmp
 *.tif
 *.exr
