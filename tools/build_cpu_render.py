@@ -11,7 +11,12 @@ import sysconfig
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "cpu" / "cpu_render.cpp"
+SOURCES = [
+    ROOT / "cpu" / "cpu_render_mixed.cpp",
+    ROOT / "cpu" / "cpu_render_scalar.cpp",
+    ROOT / "cpu" / "cpu_render_avx2.cpp",
+    ROOT / "cpu" / "cpu_render_avx512.cpp",
+]
 BUILD_DIR = ROOT / "build"
 OUTPUT = BUILD_DIR / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
 
@@ -36,16 +41,46 @@ def main() -> None:
         )
 
     BUILD_DIR.mkdir(exist_ok=True)
-    command = [
-        compiler,
+    compile_flags = [
         "-std=c++17",
         "-O3",
         "-DNDEBUG",
-        "-shared",
-        "-fuse-ld=lld",
+        # Packet implementations use explicit __m256/__m512 intrinsics. Keep
+        # auto-vectorization disabled so the scalar reference and post-process
+        # loops never silently acquire a higher instruction-set requirement.
+        "-fno-vectorize",
+        "-fno-slp-vectorize",
         f"-I{pybind11_include}",
         f"-I{sysconfig.get_path('include')}",
-        str(SOURCE),
+    ]
+    objects: list[Path] = []
+    for source in SOURCES:
+        object_path = BUILD_DIR / f"{source.stem}.obj"
+        architecture_flags: list[str] = []
+        if source.name in {"cpu_render_mixed.cpp", "cpu_render_avx2.cpp"}:
+            architecture_flags = ["-mavx2"]
+        elif source.name == "cpu_render_avx512.cpp":
+            # Keep AVX-512 isolated in this object. Detection and module setup
+            # remain executable on AVX2-only systems.
+            architecture_flags = ["-mavx512f", "-mavx512dq"]
+        command = [
+            compiler,
+            *compile_flags,
+            *architecture_flags,
+            "-c",
+            str(source),
+            "-o",
+            str(object_path),
+        ]
+        print("Compiling", source.name)
+        subprocess.run(command, cwd=ROOT, check=True)
+        objects.append(object_path)
+
+    command = [
+        compiler,
+        "-shared",
+        "-fuse-ld=lld",
+        *(str(object_path) for object_path in objects),
         "-o",
         str(OUTPUT),
     ]
@@ -59,7 +94,7 @@ def main() -> None:
             "-Xlinker",
             f"/IMPLIB:{BUILD_DIR / 'cpu_render_native.lib'}",
         ])
-    print("Building", OUTPUT.name)
+    print("Linking", OUTPUT.name)
     subprocess.run(command, cwd=ROOT, check=True)
 
 

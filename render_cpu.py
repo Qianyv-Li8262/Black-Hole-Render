@@ -97,11 +97,19 @@ class RenderParams:
 
 _ROOT = Path(__file__).resolve().parent
 _EXTENSION_PATH = _ROOT / "build" / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
+_NATIVE_SOURCE_PATHS = (
+    _ROOT / "cpu" / "cpu_render_common.h",
+    _ROOT / "cpu" / "cpu_render_mixed.cpp",
+    _ROOT / "cpu" / "cpu_render_scalar.cpp",
+    _ROOT / "cpu" / "cpu_render_avx2.cpp",
+    _ROOT / "cpu" / "cpu_render_avx512.cpp",
+    _ROOT / "tools" / "build_cpu_render.py",
+)
 _NATIVE_MODULE: ModuleType | None = None
 
 
 def build_native_extension() -> Path:
-    """Compile ``cpu/cpu_render.cpp`` into the pybind11 extension consumed by this module."""
+    """Compile the native CPU renderer sources into the pybind11 extension."""
 
     subprocess.run([sys.executable, str(_ROOT / "tools" / "build_cpu_render.py")], cwd=_ROOT, check=True)
     importlib.invalidate_caches()
@@ -109,9 +117,24 @@ def build_native_extension() -> Path:
 
 
 def native_extension_exists() -> bool:
-    """Return whether the pybind11 ``cpu_render_native`` module is built."""
+    """Return whether the native extension exists and is newer than its sources."""
 
-    return _EXTENSION_PATH.is_file()
+    if not _EXTENSION_PATH.is_file():
+        return False
+    extension_mtime = _EXTENSION_PATH.stat().st_mtime_ns
+    return all(path.is_file() and path.stat().st_mtime_ns <= extension_mtime for path in _NATIVE_SOURCE_PATHS)
+
+
+def avx2_supported() -> bool:
+    """Return whether the current CPU and operating system can execute AVX2."""
+
+    return bool(_native_module().avx2_supported())
+
+
+def avx512_supported() -> bool:
+    """Return whether AVX-512F/DQ and operating-system ZMM state are available."""
+
+    return bool(_native_module().avx512_supported())
 
 
 def _native_module() -> ModuleType:
@@ -149,7 +172,7 @@ def render(
     tile_size: tuple[int, int] = (32, 8),
     workers: int | None = None,
 ) -> np.ndarray:
-    """Render in-place into a ``(height, width, 4)`` float32 NumPy array.
+    """Render into a float32 RGBA array using AVX-512 when available, otherwise AVX2.
 
     ``workers=None`` uses the machine's hardware-thread count.  The call
     returns ``raw_img`` for convenient chaining.
@@ -180,7 +203,7 @@ def render_new(
     tile_size: tuple[int, int] = (32, 8),
     workers: int | None = None,
 ) -> np.ndarray:
-    """Allocate a float32 RGBA buffer, render into it, and return it."""
+    """Allocate and render with automatic AVX-512/AVX2 dispatch."""
 
     tile_width, tile_height = _tile_dimensions(tile_size)
     return _native_module().render_new(
@@ -319,7 +342,7 @@ def run_full_resolution_low_ssaa_test() -> Path:
         import cv2
     except ModuleNotFoundError as error:
         raise RuntimeError("The CPU image test needs opencv-python (`pip install opencv-python`).") from error
-    if not _EXTENSION_PATH.exists():
+    if not native_extension_exists():
         build_native_extension()
 
     from cfg import offline as config
