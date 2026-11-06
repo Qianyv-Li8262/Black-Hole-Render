@@ -23,7 +23,7 @@ def synthetic_textures() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     disk[..., 0] = 0.08 + radius / 120.0
     disk[..., 1] = 3500.0 + radius * 350.0 + height * 20.0
     disk[..., 2] = 0.03 + azimuth / 640.0
-    disk[..., 3] = 0.0
+    disk[..., 3] = np.clip((azimuth + height) / 40.0, 0.0, 1.0)
 
     lut_x = np.linspace(0.0, 1.0, 64, dtype=np.float32)
     color_lut = np.empty((2, 64, 4), dtype=np.float32)
@@ -101,6 +101,44 @@ class Avx2RendererTests(unittest.TestCase):
         scalar, avx2, _, _ = self.render_pair(test_params(flags, maxstep=80))
         self.assertTrue(np.isfinite(avx2).all())
         np.testing.assert_allclose(avx2, scalar, rtol=5e-4, atol=5e-5)
+
+    def test_dark_material_blocks_background_without_emitting(self) -> None:
+        background = np.ones((4, 8, 4), dtype=np.float32)
+        disk = np.zeros((8, 8, 8, 4), dtype=np.float32)
+        disk[..., 0] = 0.5
+        disk[..., 1] = 1500.0
+        disk[..., 3] = 1.0
+        lut = np.ones((2, 8, 4), dtype=np.float32)
+        params = render_cpu.RenderParams(
+            time=0.0,
+            camera_position=(12.0, 0.0, 12.0),
+            forward=(0.0, 0.0, -1.0),
+            right=(1.0, 0.0, 0.0),
+            up=(0.0, 1.0, 0.0),
+            physwidth=0.02,
+            physheight=0.02,
+            focal_length=2.0,
+            step=0.02,
+            maxstep=4000,
+            jitternum=1,
+            flags=render_cpu.RenderFlag.OPACITY_CHANGE,
+        )._native()
+        dark = self.native.render_new(3, 3, background, disk, lut, params, 3, 3, 1)
+        self.assertLess(float(dark[..., :3].max()), 0.02)
+        self.assertGreater(float(dark[..., :3].min()), 0.0)
+
+        # Changing emission must leave background transmission unchanged.
+        black = np.zeros_like(background)
+        unlit = self.native.render_new(3, 3, black, disk, lut, params, 3, 3, 1)
+        disk[..., 2] = 0.2
+        lit_white = self.native.render_new(3, 3, background, disk, lut, params, 3, 3, 1)
+        lit_black = self.native.render_new(3, 3, black, disk, lut, params, 3, 3, 1)
+        np.testing.assert_allclose((lit_white - lit_black)[..., :3], (dark - unlit)[..., :3], atol=2e-6)
+
+        params.flags = 0
+        disk[..., 2] = 0.0
+        legacy = self.native.render_new(3, 3, background, disk, lut, params, 3, 3, 1)
+        np.testing.assert_allclose(legacy[..., :3], 1.0, atol=1e-6)
 
     def test_full_rgba8_pipeline_with_multiple_workers(self) -> None:
         output = render_cpu.render_rgba8_new(

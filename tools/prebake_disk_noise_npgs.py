@@ -7,11 +7,12 @@
   - 噪声源从 repeaterTurbulence(...) * 0.8 改为
     npgsAccretionDiskNoiseCentered(...) —— 乘性多倍频 + log 压缩 + 中心化
   - 坐标缩放改为接近 NPGS 的设计: r/z 方向大尺度, 角向小尺度
-  - exp(noise) 物理映射完全保留 (绝热锁死, 不动)
+  - 厚云团预设使用三维胞状团块和限频 fBm，第四通道存致密核心比例
   - noise 中心在 0 (即 exp(noise) 中心在 1), 幅度可调, 不改变原有物理趋势
 
-输出文件: cache/prebaked_disk_noise_npgs.npy
-(原 cache/prebaked_disk_noise.npy 保持不变, 运行时需手动切换加载路径)
+输出文件: cache/prebaked_disk_clouds.npy
+关闭 CLOUD_STRUCTURE 后输出原版 cache/prebaked_disk_noise_npgs.npy。
+厚云团预设配合 cfg/offline.py 中的 OPACITY_CHANGE=True 使用。
 """
 
 import numpy as np
@@ -22,13 +23,32 @@ import os
 # ============================================================
 # 纹理分辨率
 # ============================================================
-R_SAMPLES   = 256   # r_disk: 4.9495 .. 25.0
+R_SAMPLES   = 256   # r_disk: 4.9495 .. 35.0
 Z_SAMPLES   = 128   #  z:    -2.5    .. 2.5
-PHI_SAMPLES = 128   # phi:    0.0    .. 2*pi
+PHI_SAMPLES = 512   # 角向需要解析云团毛边，避免低分辨率烘焙变成毡子
 
 R_DISK_MIN = 4.9495
 R_DISK_MAX = 35.0
 Z_MAX = 2.5
+
+# 厚度是密度高斯包络的标准差，单位与渲染坐标一致。
+CLOUD_STRUCTURE = True
+CLOUD_HEIGHT_INNER = 0.22
+CLOUD_HEIGHT_OUTER = 1.05
+CLOUD_HEIGHT_VARIATION = 0.55  # 大尺度起伏对局部厚度的影响
+CLOUD_DETAIL_STRENGTH = 0.45  # 保留少量 NPGS 细节，大尺度云团负责主体形状
+CLOUD_EDGE_ROUGHNESS = 0.75  # 三维细节侵蚀云团表面，形成柔软毛边
+CLOUD_EDGE_SOFTNESS = 0.22  # 密度从团块向雾气延伸的过渡宽度
+CLOUD_LINK_DENSITY = 0.025  # 少量连接云丝；过高会沿视线叠成不透明的毡子
+CLOUD_POROSITY = 0.90      # 三维疏密通道强度；0 保留连续云体，1 打开最深的缝隙
+CLOUD_MIDPLANE_WARP = 0.35   # 云层中面起伏，单位为局部半厚度
+CLOUD_OUTER_COVERAGE = 0.70     # 越小外盘越破碎；内盘保留连续亮带
+CLOUD_EMISSION_GAIN = 4.0        # 在烘焙中提亮云体，保持原径向色温和背景曝光
+COLD_SOURCE_BOOST = 1.0          # 让致密云面在高消光时仍能发亮
+COLD_DENSITY_BOOST = 4.0      # 暗核密度最高乘 (1 + boost)
+COLD_EMISSION_SUPPRESSION = 0.8  # 保留云体发光，避免高消光区变成死黑剪影
+COLD_CORE_START = 0.48
+COLD_CORE_END = 0.70
 
 # ============================================================
 # NPGS 噪声参数 (可在不破坏物理趋势的前提下调整)
@@ -109,6 +129,33 @@ def create_2d_texture(arr):
 KERNEL_CODE = r'''
 #include "cuda_noise.cuh"
 
+__device__ float cloud_fbm(float3 p, int seed) {
+    // Only frequencies resolved by the LUT; the legacy 3^11 octave is not
+    // appropriate for a texture whose azimuth has a finite sample count.
+    return 0.57f * cudaNoise::simplexNoise(p, 1.0f, seed) +
+           0.29f * cudaNoise::simplexNoise(p, 2.0f, seed + 101) +
+           0.14f * cudaNoise::simplexNoise(p, 4.0f, seed + 203);
+}
+
+__device__ float cloud_lobe_distance(float3 p, int seed) {
+    // Rounded 3D lobes. floorf is essential for continuity in negative cells.
+    int ix = (int)floorf(p.x), iy = (int)floorf(p.y), iz = (int)floorf(p.z);
+    float distance = 10.0f;
+    for (int z = -1; z <= 1; ++z)
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                unsigned int h = cudaNoise::hash((unsigned int)(ix + x) * 73856093u ^
+                                                (unsigned int)(iy + y) * 19349663u ^
+                                                (unsigned int)(iz + z) * 83492791u ^ (unsigned int)seed);
+                float dx = p.x - (ix + x + 0.15f + 0.7f * cudaNoise::randomFloat(h));
+                float dy = p.y - (iy + y + 0.15f + 0.7f * cudaNoise::randomFloat(h ^ 0x68bc21ebu));
+                float dz = p.z - (iz + z + 0.15f + 0.7f * cudaNoise::randomFloat(h ^ 0x02e5be93u));
+                float radius = 0.5f + 0.5f * cudaNoise::randomFloat(h ^ 0x967a889bu);
+                distance = fminf(distance, sqrtf(dx*dx + dy*dy + dz*dz) / radius);
+            }
+    return distance;
+}
+
 extern "C" __global__
 void prebake_disk_kernel(
     cudaTextureObject_t lut_physics,     // 2D 纹理: (z, r) 硬件双线性采样
@@ -120,7 +167,13 @@ void prebake_disk_kernel(
     float npgs_center_reference, float npgs_center_target, float npgs_amplitude,
     float npgs_noise_clip,
     float output_clip,
-    int npgs_seed
+    int npgs_seed,
+    float height_inner, float height_outer, float height_variation,
+    float edge_roughness, float edge_softness, float link_density, float porosity,
+    float midplane_warp, float outer_coverage,
+    float emission_gain, float cold_source_boost,
+    float cold_density_boost, float cold_emission_suppression,
+    float cold_core_start, float cold_core_end
 ) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total = r_out * z_out * phi_out;
@@ -144,7 +197,7 @@ void prebake_disk_kernel(
         0.1f * z_abs,                               // 垂直: 大尺度 (原 *5.0 改为 *0.1, 消除细碎条带)
         0.02f * powf(r_disk, 0.7f) * phi            // 角向: 小尺度丝状
     );
-
+#ifndef DISK_CLOUD_STRUCTURE
     // NPGS 中心化噪声: 输出中心在 npgs_center_target (默认 0),
     // exp(noise) 中心在 1, 不改变原有物理趋势. 幅度由 npgs_amplitude 控制.
     // noise_clip 为安全硬上限, 防止 exp(noise*2.67) 溢出 inf.
@@ -155,16 +208,95 @@ void prebake_disk_kernel(
         npgs_noise_clip,
         npgs_seed
     )*__saturatef(6.9f-r_disk*0.2f);
+#endif
 
     // ---- 硬件双线性采样 lut_physics ----
     float tex_u = (r_disk - r_min) / (r_max - r_min);
     float tex_v = fabsf(z_abs) / z_max;
+#ifdef DISK_CLOUD_STRUCTURE
+    // Cartesian noise is periodic across phi=0/2pi. The same broad field
+    // shapes the cloud height and the cold cores within that cloud.
+    float flow_angle = phi + 0.7f * logf(r_disk / r_min);
+    float3 cloud_pos = make_float3(0.28f * r_disk * cosf(flow_angle),
+                                  0.28f * r_disk * sinf(flow_angle), 0.0f);
+    float height_noise = cudaNoise::simplexNoise(cloud_pos, 1.0f, npgs_seed + 17);
+    float radial_fraction = (r_disk - r_min) / (r_max - r_min);
+    float height = (height_inner + (height_outer - height_inner) * powf(radial_fraction, 0.75f)) *
+                   (1.0f + height_variation * height_noise);
+    height = fmaxf(height, 0.01f);
+    float midplane = midplane_warp * height *
+                     cudaNoise::simplexNoise(cloud_pos, 1.3f, npgs_seed + 23);
+    cloud_pos.z = (z_abs - midplane) * 0.65f;
+    // Warp the volume in all three axes so neighboring lobes do not form a
+    // regular row of spheres. Coordinates remain periodic at the phi wrap.
+    float3 unwarped = cloud_pos;
+    cloud_pos.x += 0.35f * cloud_fbm(unwarped, npgs_seed + 107);
+    cloud_pos.y += 0.35f * cloud_fbm(unwarped, npgs_seed + 211);
+    cloud_pos.z += 0.35f * cloud_fbm(unwarped, npgs_seed + 313);
+    float edge_noise = cloud_fbm(cloud_pos, npgs_seed + 59);
+    float q = (z_abs - midplane) / height;
+    float outward = radial_fraction * radial_fraction * (3.0f - 2.0f * radial_fraction);
+    float coverage = 1.05f + (outer_coverage - 1.05f) * outward;
+    float body = coverage - cloud_lobe_distance(cloud_pos, npgs_seed + 31) +
+                 edge_roughness * edge_noise - (0.25f - 0.12f * outward) * q * q;
+    float core_noise = __saturatef(body + 0.25f);
+    float cold_fraction = __saturatef((core_noise - cold_core_start) / (cold_core_end - cold_core_start));
+    cold_fraction = cold_fraction * cold_fraction * (3.0f - 2.0f * cold_fraction);
+    float noise = npgs_amplitude * cloud_fbm(cloud_pos, npgs_seed + 83);
+    // Sample the original radial profile at the midplane, then apply the
+    // new height envelope instead of inheriting its fixed 0.18 thickness.
+    tex_v = 0.0f;
+#endif
     float4 params = tex2D<float4>(lut_physics, tex_u, tex_v);
 
     // 物理映射完全保留 (绝热锁死, 不动)
     float density   = params.x * __expf(noise);
     float temp      = params.y * __expf(noise * 0.67f);
     float intensity = params.z * __expf(noise * 2.67f);
+
+#ifdef DISK_CLOUD_STRUCTURE
+    // Stable softplus replaces the clipped body boundary with a long density
+    // shoulder. Its derivative is continuous through the visible cloud edge.
+    float soft_body = fmaxf(body, 0.0f) + edge_softness *
+                      log1pf(__expf(-fabsf(body) / edge_softness));
+    float cloud_density = powf(soft_body / 0.6f, 1.4f);
+    // Soft edges alone leave a nonzero density shoulder everywhere. Along a
+    // grazing ray those shoulders add up to a solid sheet. Open correlated
+    // 3D channels through the body, retaining dense lobes beside thin mist.
+    // Use only two broad octaves so the gaps survive texture filtering.
+    float3 gap_pos = make_float3(unwarped.x * 1.7f, unwarped.y * 1.7f,
+                                unwarped.z * 2.0f);
+    float gap_field = 0.75f * cudaNoise::simplexNoise(gap_pos, 1.0f, npgs_seed + 503) +
+                      0.25f * cudaNoise::simplexNoise(gap_pos, 2.0f, npgs_seed + 607);
+    float filled = __saturatef((gap_field + 0.25f) / 0.6f);
+    filled = filled * filled * (3.0f - 2.0f * filled);
+    // Leave the hot inner band continuous; open more gaps outside it.
+    float gap_radial = __saturatef((r_disk - 7.0f) / 7.0f);
+    gap_radial = gap_radial * gap_radial * (3.0f - 2.0f * gap_radial);
+    cloud_density *= 1.0f - porosity * gap_radial * (1.0f - filled * filled);
+    // Low-frequency ridges form connected, uneven wisps between the lobes.
+    // This is a density component, so it both emits and partially obscures.
+    float3 link_pos = make_float3(0.13f * r_disk * cosf(flow_angle),
+                                 0.13f * r_disk * sinf(flow_angle),
+                                 0.9f * (z_abs - midplane));
+    float link_field = cloud_fbm(link_pos, npgs_seed + 419);
+    float links = link_density * __expf(-10.0f * fabsf(link_field)) *
+                  (0.5f + 0.5f * __saturatef(0.5f + edge_noise));
+    cloud_density += links;
+    // Fade well before the box boundary, rather than slicing off a plume.
+    float edge = __saturatef((z_max - fabsf(z_abs)) / (0.40f * z_max));
+    edge = edge * edge * (3.0f - 2.0f * edge);
+    float radial_edge = __saturatef((r_max - r_disk) / 7.0f);
+    radial_edge = radial_edge * radial_edge * (3.0f - 2.0f * radial_edge);
+    density *= cloud_density * __expf(-0.25f * q * q) * edge * radial_edge *
+               (1.0f + cold_density_boost * cold_fraction);
+    // Keep the original physics LUT temperature and color LUT unchanged.
+    // Only brightness changes here; the outer red / inner white mapping stays.
+    // The transfer equation already weights emission by density, including
+    // its height envelope. Applying a second envelope would thin the light layer.
+    intensity *= emission_gain * (1.0f + cold_source_boost * cold_fraction) *
+                 __expf(-cold_emission_suppression * cold_fraction);
+#endif
 
     // 末端安全 clip: 直接限制三个输出值, 保证写入 half 纹理 (上限 ~65504) 不溢出.
     // 这道兜底覆盖 noise_clip 管不到的情况 —— params.z 基线大时乘积仍可能爆.
@@ -178,12 +310,30 @@ void prebake_disk_kernel(
     output[out_off + 0] = density;
     output[out_off + 1] = temp;
     output[out_off + 2] = intensity;
+#ifdef DISK_CLOUD_STRUCTURE
+    output[out_off + 3] = cold_fraction;
+#else
     output[out_off + 3] = 0.0f;
+#endif
 }
 '''
 
 
-def main():
+def main(output_path=None):
+    if not 0.0 <= COLD_CORE_START < COLD_CORE_END <= 1.0:
+        raise ValueError("Cold core thresholds must satisfy 0 <= start < end <= 1")
+    if min(CLOUD_HEIGHT_INNER, CLOUD_HEIGHT_OUTER) <= 0.0:
+        raise ValueError("Cloud heights must be positive")
+    if not 0.0 < CLOUD_OUTER_COVERAGE <= 1.05:
+        raise ValueError("Outer coverage must be in (0, 1.05]")
+    if CLOUD_EDGE_SOFTNESS <= 0.0:
+        raise ValueError("Cloud edge softness must be positive")
+    if not 0.0 <= CLOUD_POROSITY <= 1.0:
+        raise ValueError("Cloud porosity must be in [0, 1]")
+    if min(CLOUD_EDGE_ROUGHNESS, CLOUD_LINK_DENSITY, CLOUD_MIDPLANE_WARP,
+           COLD_DENSITY_BOOST, COLD_EMISSION_SUPPRESSION,
+           CLOUD_EMISSION_GAIN, COLD_SOURCE_BOOST) < 0.0:
+        raise ValueError("Cloud appearance controls must be nonnegative")
     base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     # 1. 加载 lut_physics 并创建纹理
@@ -199,10 +349,14 @@ def main():
     total_voxels = R_SAMPLES * Z_SAMPLES * PHI_SAMPLES
     output_flat = cp.empty((total_voxels * 4,), dtype=cp.float32)
 
-    print(f"\n预烘焙 3D 噪声纹理 (NPGS 风格)...")
+    print(f"\n预烘焙 3D 噪声纹理 ({'胞状厚云团' if CLOUD_STRUCTURE else 'NPGS 风格'})...")
     print(f"  分辨率: {R_SAMPLES} (r) x {Z_SAMPLES} (z) x {PHI_SAMPLES} (phi)")
     print(f"  总像素: {total_voxels:,} ({total_voxels * 4 * 4 / 1024 / 1024:.1f} MB)")
-    print(f"  NPGS 参数:")
+    if CLOUD_STRUCTURE:
+        print(f"  Cloud coverage={CLOUD_OUTER_COVERAGE}, roughness={CLOUD_EDGE_ROUGHNESS}, emission={CLOUD_EMISSION_GAIN}")
+        print(f"  Porosity={CLOUD_POROSITY}, edge softness={CLOUD_EDGE_SOFTNESS}, links={CLOUD_LINK_DENSITY}")
+        print("  保留原物理 LUT 色温及颜色映射")
+    print(f"  Noise 参数 (cloud 模式仅使用限频 fBm):")
     print(f"    octave [{NPGS_OCTAVE_START}, {NPGS_OCTAVE_END}], contrast={NPGS_CONTRAST}")
     print(f"    center_ref={NPGS_CENTER_REFERENCE}, center_target={NPGS_CENTER_TARGET}, amplitude={NPGS_AMPLITUDE}")
     print(f"    noise_clip={NPGS_NOISE_CLIP} (exp(clip*2.67)={np.exp(NPGS_NOISE_CLIP*2.67):.2e})")
@@ -210,9 +364,12 @@ def main():
     print(f"    seed={NPGS_SEED} (0 = 原始盘; 非0 = 换一张盘)")
 
     # 3. 编译并运行
+    options = [f'-I{os.path.join(base_path, "krnls")}']
+    if CLOUD_STRUCTURE:
+        options.append('-DDISK_CLOUD_STRUCTURE')
     kernel = cp.RawKernel(
         KERNEL_CODE, 'prebake_disk_kernel',
-        options=(f'-I{os.path.join(base_path, "krnls")}',)
+        options=tuple(options)
     )
 
     block = 256
@@ -228,10 +385,20 @@ def main():
             np.float32(NPGS_OCTAVE_START), np.float32(NPGS_OCTAVE_END),
             np.float32(NPGS_CONTRAST),
             np.float32(NPGS_CENTER_REFERENCE), np.float32(NPGS_CENTER_TARGET),
-            np.float32(NPGS_AMPLITUDE),
+            np.float32(NPGS_AMPLITUDE * (CLOUD_DETAIL_STRENGTH if CLOUD_STRUCTURE else 1.0)),
             np.float32(NPGS_NOISE_CLIP),
             np.float32(OUTPUT_CLIP),
             np.int32(NPGS_SEED),
+            np.float32(CLOUD_HEIGHT_INNER), np.float32(CLOUD_HEIGHT_OUTER),
+            np.float32(CLOUD_HEIGHT_VARIATION),
+            np.float32(CLOUD_EDGE_ROUGHNESS), np.float32(CLOUD_EDGE_SOFTNESS),
+            np.float32(CLOUD_LINK_DENSITY), np.float32(CLOUD_POROSITY),
+            np.float32(CLOUD_MIDPLANE_WARP),
+            np.float32(CLOUD_OUTER_COVERAGE),
+            np.float32(CLOUD_EMISSION_GAIN), np.float32(COLD_SOURCE_BOOST),
+            np.float32(COLD_DENSITY_BOOST),
+            np.float32(COLD_EMISSION_SUPPRESSION),
+            np.float32(COLD_CORE_START), np.float32(COLD_CORE_END),
         )
     )
     cp.cuda.Device().synchronize()
@@ -240,7 +407,8 @@ def main():
     result = output_flat.get().reshape(R_SAMPLES, Z_SAMPLES, PHI_SAMPLES, 4)
     cache_dir = os.path.join(base_path, 'cache')
     os.makedirs(cache_dir, exist_ok=True)
-    out_path = os.path.join(cache_dir, 'prebaked_disk_noise_npgs.npy')
+    filename = 'prebaked_disk_clouds.npy' if CLOUD_STRUCTURE else 'prebaked_disk_noise_npgs.npy'
+    out_path = os.fspath(output_path) if output_path is not None else os.path.join(cache_dir, filename)
     np.save(out_path, result)
 
     print(f"\n已保存到 {out_path}")
@@ -266,5 +434,6 @@ def main():
     print(f"  density:   {result[result[..., 0] > OUTPUT_CLIP, 0].max() if (result[..., 0] > OUTPUT_CLIP).any() else 0:.2e}")
     print(f"  temp:      {result[result[..., 1] > OUTPUT_CLIP, 1].max() if (result[..., 1] > OUTPUT_CLIP).any() else 0:.2e}")
     print(f"  intensity: {result[result[..., 2] > OUTPUT_CLIP, 2].max() if (result[..., 2] > OUTPUT_CLIP).any() else 0:.2e}")
+    return result
 if __name__ == '__main__':
     main()

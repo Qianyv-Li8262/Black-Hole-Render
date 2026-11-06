@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 #include "cuda_vec_math_utils.cuh"
+#include "radiative_transfer.h"
 
 __device__ __forceinline__ float3 boost(float3 b, float3 vec, float gamma)
 {
@@ -398,6 +399,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
         float3 p_init = p;
         float lz = cam_pos.x * p.y - cam_pos.y * p.x;
         bool flag = true;
+        // xyz: integrated radiance; w: accumulated optical depth (not alpha).
         float4 accumulated_color = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
         for (int s = 0; s < maxstep && flag; ++s) {
@@ -535,7 +537,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
             float t_use = (prev_dt + delta_t) * 0.5f;
 #endif
             float r_disk_sq = temp.x * temp.x + temp.y * temp.y;
-            bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 1225.0f && fabsf(cam_pos.z) < 2.5f);
+            bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 1225.0f && fabsf(temp.z) < 2.5f);
 
             if (indisk) {
                 float r_disk = sqrtf(r_disk_sq); // 差动旋转
@@ -556,42 +558,29 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                                                   (r_disk - 4.9495f) / 30.0505f); // z → r_disk
 
                 float g = fmaxf((fabsf((factor * gamma + p_init * e0) / (td - pd * lz)) - 1.0f) * 1.0f + 1.0f, 0.01f);
-                float ravg2 = (length(prev_pos) + r);
-                float uuu = 1.0f + 1.0f / (ravg2);
                 float g4 = g * g * g * g;
                 float step_len = length(cam_pos - prev_pos);
-
-                float k = 2.0f;
-                float kzg4 = k * parameters.z;
-                // float intensity_factor = 1.0f - __expf(-kzg4
-                // * kzg4);
-#ifdef OPACITY_CHANGE
-                // 冷区凝聚增强: T_eff 低 → opacity 乘 (1 + COLD_BOOST);T_eff 高 → 无加成
-                // T_COLD=2000K 以下满档,T_WARM=5000K 以上无加成,中间线性
-                // OPACITY_SCALE 把全局不透明度从 1.7 提到 3.0,整体更厚实
-                // COLD_BOOST=2.0: 冷区最多 3× 不透明度,塑造冷云团凝聚感
-                float T_eff = parameters.y * g;
-                float cold_factor = 1.0f + 2.0f * __saturatef((5000.0f - T_eff) / 3000.0f);
-                float step_opacity = parameters.x * 3.0f * uuu * uuu *
-                                     __fmaf_rn(step_len, -__expf(-kzg4 * kzg4), step_len) / g * cold_factor;
+                float fluid_step = bh_transfer::comoving_path_length(step_len, 0.5f / length(temp), td - pd * lz);
+#if defined(DISK_COEFFICIENTS)
+                float step_opacity=fmaxf(parameters.x,0.0f)*fluid_step;
+#elif defined(OPACITY_CHANGE)
+                // w is the baked cold-core fraction (zero in legacy textures).
+                // The local cloud mask controls opacity independently of color.
+                float cold_fraction = __saturatef(parameters.w);
+                float opacity_scale = 0.6f + 8.4f * cold_fraction;
+                float step_opacity = fmaxf(parameters.x, 0.0f) * opacity_scale * fluid_step;
 #else
-                // float temp_fade = __saturatef((parameters.y * g - 1400.0f) / 500.0f);
-                float temp_fade = 1.0f;
-                // float step_opacity = parameters.x * 1.7f *
-                // uuu * uuu * step_len * intensity_factor / g;
-                float step_opacity =
-                    parameters.x * 1.7f * uuu * uuu * __fmaf_rn(step_len, -__expf(-kzg4 * kzg4), step_len) / g;
-                step_opacity *= temp_fade;
+                // Legacy appearance mode additionally couples opacity to brightness.
+                float kzg4 = 2.0f * parameters.z;
+                float step_opacity = fmaxf(parameters.x, 0.0f) * 1.7f * fluid_step *
+                                     bh_transfer::absorbed_fraction(kzg4 * kzg4);
 #endif
-                // float alpha = 1.0f - __expf(-step_opacity);
-                float temp_exp = -__expf(-step_opacity);
-                // float transmittance = 1.0f -
-                // accumulated_color.w;
 #ifndef ACCRE_DISK_DOPPLER_FOLLOW_BKGD // DO NOT USE UNLESS U KNOW WHAT UR DOING
                 float4 emission = disk_emission_dep(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4, lut_color);
 #else
                 float4 color = tex2D<float4>(lut_color, (parameters.y - 510.0f) / 20000.0f, 0.5f);
-                float intensity = parameters.z * g4;
+                // rgb_three_line_frequency_shift already includes g^3.
+                float intensity = parameters.z * g;
                 float3 rgb = make_float3(color.x, color.y, color.z);
                 float3 shifted_rgb = rgb_three_line_frequency_shift(rgb, g);
                 color.x = shifted_rgb.x;
@@ -600,17 +589,30 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                 float4 emission = make_float4(color.x * intensity, color.y * intensity, color.z * intensity, 1.0f);
 #endif
 
-                float temp_calc = __fmaf_rn(emission.x, -accumulated_color.w, emission.x);
-                accumulated_color.x += __fmaf_rn(temp_calc, temp_exp, temp_calc);
-                temp_calc = __fmaf_rn(emission.y, -accumulated_color.w, emission.y);
-                accumulated_color.y += __fmaf_rn(temp_calc, temp_exp, temp_calc);
-                temp_calc = __fmaf_rn(emission.z, -accumulated_color.w, emission.z);
-                accumulated_color.z += __fmaf_rn(temp_calc, temp_exp, temp_calc);
-                temp_calc = 1 - accumulated_color.w;
-                accumulated_color.w += __fmaf_rn(temp_calc, temp_exp, temp_calc);
-                if (accumulated_color.w > 0.99f) {
+#if defined(OPACITY_CHANGE) && !defined(DISK_COEFFICIENTS)
+                // Keep j = 1.7 * density * intensity independent of opacity_scale.
+                // emission is the source function j / sigma, integrated below.
+                emission = emission * (1.7f / opacity_scale);
+#endif
+
+#ifdef DISK_COEFFICIENTS
+                float weight=bh_transfer::emission_weight(accumulated_color.w,parameters.x,fluid_step);
+#else
+                float weight = bh_transfer::segment_weight(accumulated_color.w, step_opacity);
+#endif
+                accumulated_color.x = __fmaf_rn(emission.x, weight, accumulated_color.x);
+                accumulated_color.y = __fmaf_rn(emission.y, weight, accumulated_color.y);
+                accumulated_color.z = __fmaf_rn(emission.z, weight, accumulated_color.z);
+#ifdef OPACITY_CHANGE
+                constexpr float optical_depth_cutoff = 9.21034037f; // T < 1e-4
+#else
+                constexpr float optical_depth_cutoff = 4.60517019f; // T < 0.01
+#endif
+#ifndef DISK_COEFFICIENTS
+                if (accumulated_color.w > optical_depth_cutoff) {
                     flag = false;
                 }
+#endif
             }
 
             if (r < 0.55f || r > 140.0f) {
@@ -659,11 +661,11 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
             // bkgd.z = bkgd_rgb.z * g3;
 #endif
 
-            color = accumulated_color + bkgd * (1.0f - accumulated_color.w);
+            color = accumulated_color + bkgd * __expf(-accumulated_color.w);
 
         } else {
 
-            color = accumulated_color + make_float4(0.0f, 0.0f, 0.0f, 1.0f) * (1.0f - accumulated_color.w);
+            color = accumulated_color;
         }
 
         buffer = buffer + color;

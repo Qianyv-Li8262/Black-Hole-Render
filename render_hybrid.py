@@ -20,6 +20,7 @@ import traceback
 
 import cv2
 import numpy as np
+from helpers.disk_cache import load_disk_cache
 
 try:
     import cupy as cp
@@ -136,7 +137,7 @@ class GpuRenderer:
         img_bgr = read_image_bgr(BASE_PATH / cfg.skybox_path)
         if img_bgr is None:
             raise RuntimeError(f"Unable to load skybox: {cfg.skybox_path}")
-        img_rgba = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA) * 33
+        img_rgba = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA) * getattr(cfg, "SKYBOX_SCALE", 330.0)
         del img_bgr
         skybox_gpu = cp.asarray(img_rgba.astype(np.float16))
         del img_rgba
@@ -144,9 +145,9 @@ class GpuRenderer:
         del skybox_gpu
 
         print(f"[GPU {self.gpu_id}] Loading disk texture and colour LUT...")
-        prebaked_data = np.load(BASE_PATH / cfg.prebaked_disk_path)
+        prebaked_data = load_disk_cache(BASE_PATH / cfg.prebaked_disk_path, getattr(cfg,"DISK_COEFFICIENTS",False))
         self.disk_tex = create_texture_array_3d(
-            cp.asarray(prebaked_data, dtype=cp.float16), 4, (0, 0, 1, 1, 1), True
+            cp.asarray(prebaked_data, dtype=cp.float32 if getattr(cfg,"DISK_COEFFICIENTS",False) else cp.float16), 4, (0, 0, 1, 1, 1), not getattr(cfg,"DISK_COEFFICIENTS",False)
         )
         del prebaked_data
 
@@ -173,8 +174,12 @@ class GpuRenderer:
             compile_opts.append("-DRAND_SAMP_DISK")
         if cfg.NO_BKGD_DOPPLER:
             compile_opts.append("-DNO_BKGD_DOPPLER")
+        if getattr(cfg, "OPACITY_CHANGE", False):
+            compile_opts.append("-DOPACITY_CHANGE")
 
         trace_source = kernel_file.read_text(encoding="utf-8")
+        if getattr(cfg,"DISK_COEFFICIENTS",False):
+            compile_opts.append("-DDISK_COEFFICIENTS")
         trace_module = cp.RawModule(code=trace_source, options=tuple(compile_opts))
         self.trace_rays_kernel = trace_module.get_function("blackholekernel")
 
@@ -361,24 +366,28 @@ class CpuRenderer:
         if img_bgr is None:
             raise RuntimeError(f"Unable to load skybox: {cfg.skybox_path}")
         # Keep multiplication before float16 conversion, as in GpuRenderer.
-        img_rgba = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA) * 33
+        img_rgba = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA) * getattr(cfg, "SKYBOX_SCALE", 330.0)
         del img_bgr
         self.skybox = self._as_gpu_half_texture(img_rgba)
         del img_rgba
 
-        self.disk = self._as_gpu_half_texture(np.load(BASE_PATH / cfg.prebaked_disk_path, mmap_mode="r"))
+        self.disk = load_disk_cache(BASE_PATH / cfg.prebaked_disk_path, getattr(cfg,"DISK_COEFFICIENTS",False))
+        if not getattr(cfg,"DISK_COEFFICIENTS",False):
+            self.disk = self._as_gpu_half_texture(self.disk)
         self.color_lut = self._as_gpu_half_texture(np.load(BASE_PATH / cfg.color_lut_path))
 
         self.forward, self.right, self.up = GpuRenderer._camera_axes()
         self.flags = self.cpu.RenderFlag(0)
+        if getattr(cfg,"DISK_COEFFICIENTS",False):
+            self.flags |= self.cpu.RenderFlag.DISK_COEFFICIENTS
         if cfg.USE_RK4:
             self.flags |= self.cpu.RenderFlag.USE_RK4
         if not cfg.NO_DEPTH_JITTER:
             self.flags |= self.cpu.RenderFlag.DEPTH_JITTER
         if cfg.RAND_SAMP_DISK:
             self.flags |= self.cpu.RenderFlag.RAND_SAMP_DISK
-        # Deliberately do not enable OPACITY_CHANGE: GpuRenderer does not pass
-        # -DOPACITY_CHANGE to the CUDA compiler, even when config exposes it.
+        if getattr(cfg, "OPACITY_CHANGE", False):
+            self.flags |= self.cpu.RenderFlag.OPACITY_CHANGE
         if not cfg.NO_BKGD_DOPPLER:
             self.flags |= self.cpu.RenderFlag.BACKGROUND_DOPPLER
 
@@ -521,8 +530,6 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("CUPY_CACHE_DIR", str(BASE_PATH / ".cupy_cache"))
     scheduler = FrameScheduler(cfg.total_frames, output_dir, args.overwrite)
-    if getattr(cfg, "OPACITY_CHANGE", False):
-        print("Note: OPACITY_CHANGE is not passed to the CUDA kernel; existing output is preserved.")
     manifest_path = start_manifest(
         output_dir,
         "hybrid",

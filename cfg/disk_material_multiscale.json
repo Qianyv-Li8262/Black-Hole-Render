@@ -1,0 +1,18 @@
+{
+  "resolution": [512, 128, 1024],
+  "opacity_inner_multiplier": 0.25,
+  "opacity_outer_multiplier": 0.2,
+  "opacity_transition_start": 8.0,
+  "opacity_transition_end": 30.0,
+  "height_inner": 0.22,
+  "height_outer": 1.05,
+  "height_variation": 0.55,
+  "midplane_warp": 0.35,
+  "temperature_noise_strength": 0.67,
+  "emission_noise_power": 1.6,
+  "extinction_noise_power": 0.25,
+  "noise_mode": "filtered",
+  "noise_octave_start": 2,
+  "noise_roughness": 0.65,
+  "noise_filter_mix": 0.35
+}

@@ -1,14 +1,55 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Qianyv-Li8262
+import argparse
+
+
+def parse_render_args(argv=None):
+    parser = argparse.ArgumentParser(description='Render from cfg initial conditions with a chosen output frame number.')
+    parser.add_argument('--start', type=int, default=1, metavar='FRAME',
+                        help='First saved frame number (default: 1); does not advance the camera')
+    args = parser.parse_args(argv)
+    if args.start < 1:
+        parser.error('--start must be a positive integer')
+    return args
+
+
+# Embedded preview tools supply their own argument list instead of their CLI.
+render_args = parse_render_args(globals().get('_render_argv'))
+start_frame = render_args.start
+
 import numpy as np
 import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
-import os, sys, gc
+from helpers.disk_cache import load_disk_cache
+import os, sys, gc, json
 from cfg import offline as cfg
 from cfg.offline import *
 from helpers.render_manifest import finish_manifest, start_manifest
+from helpers.camera_motion import FreeFallCamera, camera_basis
+
+
+def update_after_frame(camera, frame_args, frame_idx, d_tau):
+    """Advance free fall and pack camera/time arguments for the next frame.
+
+    vx/vy/vz are initial local beta along forward/right/up. d_tau is the
+    proper-time interval; scene time follows dt/dtau along the geodesic.
+    Keep trajectory changes in this function.
+    """
+    if not camera.advance(d_tau):
+        return False
+    frame_args[4] = np.float32(camera.time)
+    frame_args[5:8] = [np.float32(x) for x in camera.position]
+    frame_args[17:20] = [np.float32(v) for v in camera.velocity]
+    frame_args[-1] = np.int32(frame_idx + 1)
+    return True
+
+
+if not np.isfinite(d_tau) or d_tau <= 0:
+    raise ValueError('cfg.d_tau must be positive and finite')
+fwd, right, up = camera_basis(cam_yaw, cam_pitch, cam_roll)
+camera = FreeFallCamera(cam_pos_init, (vx, vy, vz), (fwd, right, up), start_t)
 
 base_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -21,7 +62,7 @@ img_bgr = cv2.imread(os.path.join(base_path, skybox_path),
 if img_bgr is None:
     print(f"错误:无法加载天空盒!")
     exit()
-img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)*33
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)*getattr(cfg, 'SKYBOX_SCALE', 330.0)
 del img_bgr
 img_float = cp.asarray(img_rgb.astype(np.float16))
 del img_rgb
@@ -31,9 +72,9 @@ print('  天空盒纹理就绪')
 
 
 print('正在加载预烘焙吸积盘纹理...')
-prebaked_data = np.load(os.path.join(base_path, prebaked_disk_path))
-ishalf=True
-tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float16),4,(0,0,1,1,1),ishalf)
+prebaked_data = load_disk_cache(os.path.join(base_path, prebaked_disk_path), getattr(cfg,'DISK_COEFFICIENTS',False))
+ishalf=not getattr(cfg,'DISK_COEFFICIENTS',False)
+tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float16 if ishalf else cp.float32),4,(0,0,1,1,1),ishalf)
 print(f"  数据 shape: {prebaked_data.shape}  dtype: {'half' if ishalf else 'float32'}")
 del prebaked_data
 print('  吸积盘 3D 纹理就绪')
@@ -61,6 +102,10 @@ if RAND_SAMP_DISK:
     compile_opts.append('-DRAND_SAMP_DISK')
 if NO_BKGD_DOPPLER:
     compile_opts.append('-DNO_BKGD_DOPPLER')
+if getattr(cfg, 'OPACITY_CHANGE', False):
+    compile_opts.append('-DOPACITY_CHANGE')
+if getattr(cfg,'DISK_COEFFICIENTS',False):
+    compile_opts.append('-DDISK_COEFFICIENTS')
 module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))
 trace_rays_kernel = module.get_function("blackholekernel")
 
@@ -82,14 +127,12 @@ downsample2x = bloom_module.get_function("downsample2x")
 # debug = bloom_module.get_function("debugOutput")
 print('  Kernel 编译完成')
 
-#-2.47,-4.47,-2.44     -2.61,-4.84,-0.70
-# w, h, total_frames, start_t, SSAA_COUNT 由 cfg/offline.py 提供
-
 output_dir = os.path.join(base_path, output_dir)
 os.makedirs(output_dir, exist_ok=True)
-if globals().get('OPACITY_CHANGE', False):
-    print('提示: OPACITY_CHANGE 当前未传递给 CUDA kernel, 本次保持原有渲染效果。')
-manifest_path = start_manifest(output_dir, 'single_gpu', cfg)
+manifest_path = start_manifest(output_dir, 'single_gpu', cfg,
+                               {'camera_motion': 'schwarzschild_free_fall',
+                                'frame_interval': 'camera_proper_time',
+                                'start_frame': start_frame})
 
 
 
@@ -99,38 +142,9 @@ tmp_blur_tex, tmp_blur_surf = create_texture_surface_union_2d(tmp_blur_buf, 4, (
 
 
 
-# cam_pos_init = np.array([-4.824605,  -9.414302 ,  4.8539257], dtype=np.float32)
-# r0 = np.linalg.norm(cam_pos_init)
-# dir_unit = cam_pos_init / r0
-
-# r = r0
-# t_val = start_t
-# tau = 0.0
-# d_tau = 0.1
-
-# cam_yaw, cam_pitch, cam_roll = -5.24, -0.05, 0
-# focal_length = 96
+t_val = camera.time
 
 
-# cam_pos_init, cam_yaw/pitch/roll, focal_length, d_tau 由 cfg/offline.py 提供
-
-
-t_val = start_t
-
-
-# vx, vy, vz 由 cfg/offline.py 提供
-world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-fwd_x = np.cos(cam_yaw) * np.cos(cam_pitch)
-fwd_y = np.sin(cam_yaw) * np.cos(cam_pitch)
-fwd_z = np.sin(cam_pitch)
-fwd = np.array([fwd_x, fwd_y, fwd_z], dtype=np.float32)
-fwd /= np.linalg.norm(fwd)
-right0 = np.cross(fwd, world_up)
-right0 /= np.linalg.norm(right0)
-up0 = np.cross(right0, fwd)
-up0 /= np.linalg.norm(up0)
-right = right0 * np.cos(cam_roll) + up0 * np.sin(cam_roll)
-up = up0 * np.cos(cam_roll) - right0 * np.sin(cam_roll)
 
 target_size = 8
 num_levels = int(np.round(np.log2(min(w, h) / target_size)))
@@ -150,7 +164,6 @@ for i in range(num_levels):
     down_resolutions.append((curr_w, curr_h))
     down_texs.append(buf_tex)
     down_surfs.append(buf_surf)
-# _, vx, vy, vz, _ = update_camera_physics_analytical(tau, r0, dir_unit, fwd, right, up, d_tau)
 tmp_texs = []
 tmp_surfs = []
 for i in range(num_levels):
@@ -255,29 +268,22 @@ print('  后处理 CUDA Graph 录制完成')
 
 
 
-print(f"\n开始离线渲染, 总计 {total_frames} 帧, 输出目录: {output_dir}")
+print(f"\n开始离线渲染, 总计 {total_frames} 帧, 起始帧号: {start_frame}, 输出目录: {output_dir}")
 
 
 
 
    
 
+# Finish initial uploads/clears before the non-blocking render stream reads them.
+cp.cuda.get_current_stream().synchronize()
 render_stream = cp.cuda.Stream(non_blocking=True)
-for frame_idx in range(1, total_frames + 1):
-    cam_pos = cam_pos_init
+kernel_args_dynamic = list(kernel_args)
+camera_frames = []
+frames_rendered = 0
+for render_idx in range(1, total_frames + 1):
+    frame_idx = start_frame + render_idx - 1
     start_time = time.time()
-    # temp_textures=[]
-    
-    kernel_args_dynamic = list(kernel_args)
-    kernel_args_dynamic[4] = cp.float32(t_val)  # time
-    kernel_args_dynamic[5] = cp.float32(cam_pos[0])
-    kernel_args_dynamic[6] = cp.float32(cam_pos[1])
-    kernel_args_dynamic[7] = cp.float32(cam_pos[2])
-    kernel_args_dynamic[17] = cp.float32(vx)
-    kernel_args_dynamic[18] = cp.float32(vy)
-    kernel_args_dynamic[19] = cp.float32(vz)
-    kernel_args_dynamic[24] = cp.float32(focal_length)
-    kernel_args_dynamic[-1] = cp.int32(frame_idx)  # frames
     cp.cuda.profiler.start()
     with render_stream:
         # 1. 核心光追
@@ -297,18 +303,31 @@ for frame_idx in range(1, total_frames + 1):
     # img_bgr_np[602,512,1]=0
     # img_bgr_np[602,512,2]=255
     output_path = os.path.join(output_dir, f"frame_{frame_idx:05d}.png")
-    cv2.imwrite(output_path, img_bgr_np)
+    if not cv2.imwrite(output_path, img_bgr_np):
+        raise OSError(f'Could not save frame: {output_path}')
+    frames_rendered += 1
+    camera_frames.append({'frame': frame_idx, 'proper_time': camera.proper_time,
+                          'time': camera.time, 'position': camera.position.tolist(),
+                          'velocity': camera.velocity.tolist()})
 
     elapsed = time.time() - start_time
-    print(f'this frame, vx={vx}')
-    t_val+=0.033
 
 
-    print(f"[Frame {frame_idx:05d}/{total_frames:05d}] {elapsed:.3f} s | "
-          f"t={t_val:.2f} beta={np.sqrt(vx**2+vy**2+vz**2):.4f}")
+    print(f"[Frame {frame_idx:05d} | {render_idx}/{total_frames}] {elapsed:.3f} s | "
+          f"t={camera.time:.4f} tau={camera.proper_time:.4f} "
+          f"r={np.linalg.norm(camera.position):.4f} "
+          f"beta={np.linalg.norm(camera.velocity):.6f}")
+    if render_idx < total_frames and not update_after_frame(camera, kernel_args_dynamic, render_idx, d_tau):
+        print('相机已接近视界（r=0.55），停止后续帧渲染。')
+        break
 
 
     gc.collect()
 
 print("\n渲染完毕!")
-finish_manifest(manifest_path, 'complete', {'frames_rendered': total_frames})
+trajectory_path = manifest_path.with_name(manifest_path.stem + '_camera.json')
+with open(trajectory_path, 'w', encoding='utf-8') as f:
+    json.dump(camera_frames, f, ensure_ascii=False, indent=2)
+finish_manifest(manifest_path, 'complete', {'frames_rendered': frames_rendered,
+                'last_frame': start_frame + frames_rendered - 1 if frames_rendered else None,
+                'stopped_near_horizon': camera.stopped, 'camera_trajectory': trajectory_path.name})

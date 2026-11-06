@@ -249,6 +249,17 @@ static inline __m512 exp_v16(__m512 value)
     return _mm512_mul_ps(polynomial, _mm512_castsi512_ps(power));
 }
 
+static inline __m512 absorbed_fraction_v16(__m512 t)
+{
+    t = _mm512_max_ps(t, v16(0.0f));
+    __m512 polynomial = _mm512_add_ps(v16(-1.0f / 24.0f), _mm512_mul_ps(t, v16(1.0f / 120.0f)));
+    polynomial = _mm512_add_ps(v16(1.0f / 6.0f), _mm512_mul_ps(t, polynomial));
+    polynomial = _mm512_add_ps(v16(-0.5f), _mm512_mul_ps(t, polynomial));
+    polynomial = _mm512_mul_ps(t, _mm512_add_ps(v16(1.0f), _mm512_mul_ps(t, polynomial)));
+    const __m512 regular = _mm512_sub_ps(v16(1.0f), exp_v16(_mm512_sub_ps(v16(0.0f), t)));
+    return v16_select(v16_cmp_ps(t, v16(0.01f), _CMP_LT_OQ), polynomial, regular);
+}
+
 static inline __m512 atan_reduced_v16(__m512 value)
 {
     const __m512 squared = _mm512_mul_ps(value, value);
@@ -763,7 +774,7 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                     __m512 in_disk =
                         _mm512_and_ps(_mm512_and_ps(v16_cmp_ps(disk_radius_sq, v16(24.4974f), _CMP_GT_OQ),
                                                     v16_cmp_ps(disk_radius_sq, v16(1225.0f), _CMP_LT_OQ)),
-                                      v16_cmp_ps(v16_abs(cam_pos.z), v16(2.5f), _CMP_LT_OQ));
+                                      v16_cmp_ps(v16_abs(disk_pos.z), v16(2.5f), _CMP_LT_OQ));
                     in_disk = _mm512_and_ps(in_disk, active);
 
                     if (any_lane(in_disk)) {
@@ -801,26 +812,44 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                         const __m512 extinction =
                             _mm512_sub_ps(one, exp_v16(_mm512_sub_ps(zero, _mm512_mul_ps(kzg4, kzg4))));
                         __m512 step_opacity = _mm512_mul_ps(
-                            _mm512_mul_ps(_mm512_mul_ps(disk_parameters.x, opacity_change ? v16(3.0f) : v16(1.7f)),
+                            _mm512_mul_ps(_mm512_mul_ps(disk_parameters.x, v16(1.7f)),
                                           _mm512_mul_ps(uuu, uuu)),
                             _mm512_div_ps(_mm512_mul_ps(step_length, extinction), g));
+                        __m512 source_scale = one;
                         if (opacity_change) {
-                            const __m512 temp_eff = _mm512_mul_ps(disk_parameters.y, g);
-                            const __m512 cold_factor = _mm512_add_ps(
-                                one,
-                                _mm512_mul_ps(v16(2.0f),
-                                              v16_clamp(_mm512_div_ps(_mm512_sub_ps(v16(5000.0f), temp_eff), v16(3000.0f)),
-                                                       0.0f, 1.0f)));
-                            step_opacity = _mm512_mul_ps(step_opacity, cold_factor);
+                            const __m512 cold_fraction = v16_clamp(disk_parameters.w, 0.0f, 1.0f);
+                            const __m512 opacity_scale =
+                                _mm512_add_ps(v16(0.6f), _mm512_mul_ps(v16(8.4f), cold_fraction));
+                            const __m512 u = _mm512_div_ps(one, _mm512_add_ps(previous_length, radius));
+                            const __m512 fluid_step = _mm512_mul_ps(
+                                _mm512_mul_ps(step_length, _mm512_sub_ps(one, _mm512_mul_ps(u, u))),
+                                v16_abs(_mm512_sub_ps(td, _mm512_mul_ps(pd, lz))));
+                            step_opacity = _mm512_mul_ps(
+                                _mm512_mul_ps(_mm512_max_ps(disk_parameters.x, zero), opacity_scale),
+                                fluid_step);
+                            source_scale = _mm512_div_ps(v16(1.7f), opacity_scale);
                         }
-                        const __m512 opacity_weight = _mm512_sub_ps(one, exp_v16(_mm512_sub_ps(zero, step_opacity)));
+                        step_opacity = _mm512_max_ps(step_opacity, zero);
+                        __m512 opacity_weight = absorbed_fraction_v16(step_opacity);
+                        if (has_flag(params, DISK_COEFFICIENTS)) {
+                            const __m512 u = _mm512_div_ps(v16(0.5f), v3_length(disk_pos));
+                            const __m512 dl = _mm512_mul_ps(_mm512_mul_ps(step_length, _mm512_sub_ps(one,_mm512_mul_ps(u,u))),v16_abs(_mm512_sub_ps(td,_mm512_mul_ps(pd,lz))));
+                            step_opacity=_mm512_mul_ps(_mm512_max_ps(disk_parameters.x,zero),dl);
+                            const __m512 t=step_opacity;
+                            const __m512 safe=_mm512_max_ps(t,v16(1e-30f));
+                            __m512 phi=_mm512_div_ps(absorbed_fraction_v16(t),safe);
+                            // absorbed_fraction is stable at small positive t; t=0 limit is 1.
+                            phi=_mm512_mask_mov_ps(phi,_mm512_cmp_ps_mask(t,v16(1e-30f),_CMP_LE_OQ),one);
+                            opacity_weight=_mm512_mul_ps(dl,phi);
+                            source_scale=one;
+                        }
                         float4x16 emission;
                         if (disk_doppler_follows_background) {
                             const float4x16 color = sample_texture2d_v16(
                                 color_lut, _mm512_div_ps(_mm512_sub_ps(disk_parameters.y, v16(510.0f)), v16(20000.0f)),
                                 v16(0.5f), in_disk);
                             const float3x16 shifted = rgb_three_line_frequency_shift_v16({color.x, color.y, color.z}, g);
-                            const __m512 intensity = _mm512_mul_ps(disk_parameters.z, g4);
+                            const __m512 intensity = _mm512_mul_ps(disk_parameters.z, g);
                             emission = {_mm512_mul_ps(shifted.x, intensity), _mm512_mul_ps(shifted.y, intensity),
                                         _mm512_mul_ps(shifted.z, intensity), one};
                         } else {
@@ -828,19 +857,20 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                                 disk_emission_dep_v16(_mm512_max_ps(_mm512_mul_ps(disk_parameters.y, g), v16(1000.0f)),
                                                      _mm512_mul_ps(disk_parameters.z, g4), color_lut, in_disk);
                         }
-                        const __m512 remaining = _mm512_sub_ps(one, accumulated.w);
+                        const __m512 remaining = exp_v16(_mm512_sub_ps(zero, accumulated.w));
                         const __m512 contribution = _mm512_mul_ps(remaining, opacity_weight);
-                        float4x16 updated{_mm512_add_ps(accumulated.x, _mm512_mul_ps(emission.x, contribution)),
-                                         _mm512_add_ps(accumulated.y, _mm512_mul_ps(emission.y, contribution)),
-                                         _mm512_add_ps(accumulated.z, _mm512_mul_ps(emission.z, contribution)),
-                                         _mm512_add_ps(accumulated.w, contribution)};
+                        const __m512 emission_contribution = _mm512_mul_ps(contribution, source_scale);
+                        float4x16 updated{_mm512_add_ps(accumulated.x, _mm512_mul_ps(emission.x, emission_contribution)),
+                                         _mm512_add_ps(accumulated.y, _mm512_mul_ps(emission.y, emission_contribution)),
+                                         _mm512_add_ps(accumulated.z, _mm512_mul_ps(emission.z, emission_contribution)),
+                                         _mm512_add_ps(accumulated.w, step_opacity)};
                         accumulated = v4_select(in_disk, updated, accumulated);
                     }
 
                     active = _mm512_and_ps(active,
                                            _mm512_and_ps(_mm512_and_ps(v16_cmp_ps(radius, v16(0.55f), _CMP_GE_OQ),
                                                                        v16_cmp_ps(radius, v16(140.0f), _CMP_LE_OQ)),
-                                                         v16_cmp_ps(accumulated.w, v16(0.99f), _CMP_LE_OQ)));
+                                                         v16_cmp_ps(accumulated.w, v16(has_flag(params, DISK_COEFFICIENTS) ? 1e30f : (opacity_change ? 9.21034037f : 4.60517019f)), _CMP_LE_OQ)));
                 }
 
                 const __m512 final_valid = _mm512_and_ps(valid_mask, v16_cmp_ps(radius, v16(0.55f), _CMP_GE_OQ));
@@ -859,7 +889,7 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                     background_color.y = shifted.y;
                     background_color.z = shifted.z;
                 }
-                const __m512 remaining = _mm512_sub_ps(one, accumulated.w);
+                const __m512 remaining = exp_v16(_mm512_sub_ps(zero, accumulated.w));
                 const float4x16 visible_color = v4_add(accumulated, v4_mul(background_color, remaining));
                 const float4x16 captured_color{accumulated.x, accumulated.y, accumulated.z, one};
                 buffer = v4_add(buffer, v4_select(final_valid, visible_color, captured_color));

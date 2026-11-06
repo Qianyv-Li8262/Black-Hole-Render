@@ -229,6 +229,17 @@ static inline __m256 exp_v8(__m256 value)
     return _mm256_mul_ps(polynomial, _mm256_castsi256_ps(power));
 }
 
+static inline __m256 absorbed_fraction_v8(__m256 t)
+{
+    t = _mm256_max_ps(t, v8(0.0f));
+    __m256 polynomial = _mm256_add_ps(v8(-1.0f / 24.0f), _mm256_mul_ps(t, v8(1.0f / 120.0f)));
+    polynomial = _mm256_add_ps(v8(1.0f / 6.0f), _mm256_mul_ps(t, polynomial));
+    polynomial = _mm256_add_ps(v8(-0.5f), _mm256_mul_ps(t, polynomial));
+    polynomial = _mm256_mul_ps(t, _mm256_add_ps(v8(1.0f), _mm256_mul_ps(t, polynomial)));
+    const __m256 regular = _mm256_sub_ps(v8(1.0f), exp_v8(_mm256_sub_ps(v8(0.0f), t)));
+    return v8_select(_mm256_cmp_ps(t, v8(0.01f), _CMP_LT_OQ), polynomial, regular);
+}
+
 static inline __m256 atan_reduced_v8(__m256 value)
 {
     const __m256 squared = _mm256_mul_ps(value, value);
@@ -786,7 +797,7 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                     __m256 in_disk =
                         _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(disk_radius_sq, v8(24.4974f), _CMP_GT_OQ),
                                                     _mm256_cmp_ps(disk_radius_sq, v8(1225.0f), _CMP_LT_OQ)),
-                                      _mm256_cmp_ps(v8_abs(cam_pos.z), v8(2.5f), _CMP_LT_OQ));
+                                      _mm256_cmp_ps(v8_abs(disk_pos.z), v8(2.5f), _CMP_LT_OQ));
                     in_disk = _mm256_and_ps(in_disk, active);
 
                     if (any_lane(in_disk)) {
@@ -824,26 +835,44 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                         const __m256 extinction =
                             _mm256_sub_ps(one, exp_v8(_mm256_sub_ps(zero, _mm256_mul_ps(kzg4, kzg4))));
                         __m256 step_opacity = _mm256_mul_ps(
-                            _mm256_mul_ps(_mm256_mul_ps(disk_parameters.x, opacity_change ? v8(3.0f) : v8(1.7f)),
+                            _mm256_mul_ps(_mm256_mul_ps(disk_parameters.x, v8(1.7f)),
                                           _mm256_mul_ps(uuu, uuu)),
                             _mm256_div_ps(_mm256_mul_ps(step_length, extinction), g));
+                        __m256 source_scale = one;
                         if (opacity_change) {
-                            const __m256 temp_eff = _mm256_mul_ps(disk_parameters.y, g);
-                            const __m256 cold_factor = _mm256_add_ps(
-                                one,
-                                _mm256_mul_ps(v8(2.0f),
-                                              v8_clamp(_mm256_div_ps(_mm256_sub_ps(v8(5000.0f), temp_eff), v8(3000.0f)),
-                                                       0.0f, 1.0f)));
-                            step_opacity = _mm256_mul_ps(step_opacity, cold_factor);
+                            const __m256 cold_fraction = v8_clamp(disk_parameters.w, 0.0f, 1.0f);
+                            const __m256 opacity_scale =
+                                _mm256_add_ps(v8(0.6f), _mm256_mul_ps(v8(8.4f), cold_fraction));
+                            const __m256 u = _mm256_div_ps(one, _mm256_add_ps(previous_length, radius));
+                            const __m256 fluid_step = _mm256_mul_ps(
+                                _mm256_mul_ps(step_length, _mm256_sub_ps(one, _mm256_mul_ps(u, u))),
+                                v8_abs(_mm256_sub_ps(td, _mm256_mul_ps(pd, lz))));
+                            step_opacity = _mm256_mul_ps(
+                                _mm256_mul_ps(_mm256_max_ps(disk_parameters.x, zero), opacity_scale),
+                                fluid_step);
+                            source_scale = _mm256_div_ps(v8(1.7f), opacity_scale);
                         }
-                        const __m256 opacity_weight = _mm256_sub_ps(one, exp_v8(_mm256_sub_ps(zero, step_opacity)));
+                        step_opacity = _mm256_max_ps(step_opacity, zero);
+                        __m256 opacity_weight = absorbed_fraction_v8(step_opacity);
+                        if (has_flag(params, DISK_COEFFICIENTS)) {
+                            const __m256 u = _mm256_div_ps(v8(0.5f), v3_length(disk_pos));
+                            const __m256 dl = _mm256_mul_ps(_mm256_mul_ps(step_length, _mm256_sub_ps(one,_mm256_mul_ps(u,u))),v8_abs(_mm256_sub_ps(td,_mm256_mul_ps(pd,lz))));
+                            step_opacity=_mm256_mul_ps(_mm256_max_ps(disk_parameters.x,zero),dl);
+                            const __m256 t=step_opacity;
+                            const __m256 safe=_mm256_max_ps(t,v8(1e-30f));
+                            __m256 phi=_mm256_div_ps(absorbed_fraction_v8(t),safe);
+                            // absorbed_fraction is stable at small positive t; t=0 limit is 1.
+                            phi=_mm256_blendv_ps(phi,one,_mm256_cmp_ps(t,v8(1e-30f),_CMP_LE_OQ));
+                            opacity_weight=_mm256_mul_ps(dl,phi);
+                            source_scale=one;
+                        }
                         float4x8 emission;
                         if (disk_doppler_follows_background) {
                             const float4x8 color = sample_texture2d_v8(
                                 color_lut, _mm256_div_ps(_mm256_sub_ps(disk_parameters.y, v8(510.0f)), v8(20000.0f)),
                                 v8(0.5f), in_disk);
                             const float3x8 shifted = rgb_three_line_frequency_shift_v8({color.x, color.y, color.z}, g);
-                            const __m256 intensity = _mm256_mul_ps(disk_parameters.z, g4);
+                            const __m256 intensity = _mm256_mul_ps(disk_parameters.z, g);
                             emission = {_mm256_mul_ps(shifted.x, intensity), _mm256_mul_ps(shifted.y, intensity),
                                         _mm256_mul_ps(shifted.z, intensity), one};
                         } else {
@@ -851,19 +880,20 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                                 disk_emission_dep_v8(_mm256_max_ps(_mm256_mul_ps(disk_parameters.y, g), v8(1000.0f)),
                                                      _mm256_mul_ps(disk_parameters.z, g4), color_lut, in_disk);
                         }
-                        const __m256 remaining = _mm256_sub_ps(one, accumulated.w);
+                        const __m256 remaining = exp_v8(_mm256_sub_ps(zero, accumulated.w));
                         const __m256 contribution = _mm256_mul_ps(remaining, opacity_weight);
-                        float4x8 updated{_mm256_add_ps(accumulated.x, _mm256_mul_ps(emission.x, contribution)),
-                                         _mm256_add_ps(accumulated.y, _mm256_mul_ps(emission.y, contribution)),
-                                         _mm256_add_ps(accumulated.z, _mm256_mul_ps(emission.z, contribution)),
-                                         _mm256_add_ps(accumulated.w, contribution)};
+                        const __m256 emission_contribution = _mm256_mul_ps(contribution, source_scale);
+                        float4x8 updated{_mm256_add_ps(accumulated.x, _mm256_mul_ps(emission.x, emission_contribution)),
+                                         _mm256_add_ps(accumulated.y, _mm256_mul_ps(emission.y, emission_contribution)),
+                                         _mm256_add_ps(accumulated.z, _mm256_mul_ps(emission.z, emission_contribution)),
+                                         _mm256_add_ps(accumulated.w, step_opacity)};
                         accumulated = v4_select(in_disk, updated, accumulated);
                     }
 
                     active = _mm256_and_ps(active,
                                            _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(radius, v8(0.55f), _CMP_GE_OQ),
                                                                        _mm256_cmp_ps(radius, v8(140.0f), _CMP_LE_OQ)),
-                                                         _mm256_cmp_ps(accumulated.w, v8(0.99f), _CMP_LE_OQ)));
+                                                         _mm256_cmp_ps(accumulated.w, v8(has_flag(params, DISK_COEFFICIENTS) ? 1e30f : (opacity_change ? 9.21034037f : 4.60517019f)), _CMP_LE_OQ)));
                 }
 
                 const __m256 final_valid = _mm256_and_ps(valid_mask, _mm256_cmp_ps(radius, v8(0.55f), _CMP_GE_OQ));
@@ -882,7 +912,7 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                     background_color.y = shifted.y;
                     background_color.z = shifted.z;
                 }
-                const __m256 remaining = _mm256_sub_ps(one, accumulated.w);
+                const __m256 remaining = exp_v8(_mm256_sub_ps(zero, accumulated.w));
                 const float4x8 visible_color = v4_add(accumulated, v4_mul(background_color, remaining));
                 const float4x8 captured_color{accumulated.x, accumulated.y, accumulated.z, one};
                 buffer = v4_add(buffer, v4_select(final_valid, visible_color, captured_color));

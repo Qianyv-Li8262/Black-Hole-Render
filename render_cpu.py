@@ -32,6 +32,7 @@ class RenderFlag(IntFlag):
     DEPTH_JITTER = 1 << 1
     RAND_SAMP_DISK = 1 << 2
     OPACITY_CHANGE = 1 << 3
+    DISK_COEFFICIENTS = 1 << 7
     BACKGROUND_DOPPLER = 1 << 4
     DISK_DOPPLER_FOLLOW_BACKGROUND = 1 << 5
     PHOTON_RING_OPTIMIZATION = 1 << 6
@@ -100,6 +101,7 @@ class RenderParams:
 _ROOT = Path(__file__).resolve().parent
 _EXTENSION_PATH = _ROOT / "build" / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
 _NATIVE_SOURCE_PATHS = (
+    _ROOT / "krnls" / "radiative_transfer.h",
     _ROOT / "cpu" / "cpu_render_common.h",
     _ROOT / "cpu" / "cpu_render_mixed.cpp",
     _ROOT / "cpu" / "cpu_render_scalar.cpp",
@@ -305,7 +307,7 @@ def _camera_vectors(yaw: float, pitch: float, roll: float) -> tuple[np.ndarray, 
     return forward, right, up
 
 
-def _load_background_rgba(path: Path) -> np.ndarray:
+def _load_background_rgba(path: Path, scale: float = 330.0) -> np.ndarray:
     """Load the configured skybox exactly as render_single.py does."""
 
     try:
@@ -324,10 +326,8 @@ def _load_background_rgba(path: Path) -> np.ndarray:
         rgba = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
     else:
         raise ValueError(f"Unsupported skybox channel count: {image.shape}")
-    # In the GPU script this multiplication occurs while rgba is uint8, then
-    # the result is uploaded as float16. Keep both conversion steps here so
-    # the CPU sees the same texture values.
-    scaled = np.multiply(rgba, np.uint8(33), dtype=np.uint8)
+    # Scale in floating point just like the GPU input, then match its upload.
+    scaled = rgba.astype(np.float32) * scale
     return _as_gpu_half_texture(scaled)
 
 
@@ -351,21 +351,25 @@ def run_full_resolution_low_ssaa_test() -> Path:
 
     test_width = int(config.w)
     test_height = int(config.h)
-    background = _load_background_rgba(_ROOT / config.skybox_path)
-    prebaked_disk = _as_gpu_half_texture(np.load(_ROOT / config.prebaked_disk_path, mmap_mode="r"))
+    background = _load_background_rgba(_ROOT / config.skybox_path, getattr(config, "SKYBOX_SCALE", 330.0))
+    from helpers.disk_cache import load_disk_cache
+    prebaked_disk = load_disk_cache(_ROOT / config.prebaked_disk_path, getattr(config,"DISK_COEFFICIENTS",False))
+    if not getattr(config,"DISK_COEFFICIENTS",False):
+        prebaked_disk=_as_gpu_half_texture(prebaked_disk)
     color_lut = _as_gpu_half_texture(np.load(_ROOT / config.color_lut_path))
     forward, right, up = _camera_vectors(config.cam_yaw, config.cam_pitch, config.cam_roll)
 
     flags = RenderFlag(0)
+    if getattr(config,"DISK_COEFFICIENTS",False):
+        flags |= RenderFlag.DISK_COEFFICIENTS
     if getattr(config, "USE_RK4", False):
         flags |= RenderFlag.USE_RK4
     if not getattr(config, "NO_DEPTH_JITTER", False):
         flags |= RenderFlag.DEPTH_JITTER
     if getattr(config, "RAND_SAMP_DISK", False):
         flags |= RenderFlag.RAND_SAMP_DISK
-    # cfg/offline.py exposes OPACITY_CHANGE, but render_single.py
-    # never appends -DOPACITY_CHANGE to compile_opts.  The GPU therefore uses
-    # the ordinary 1.7x opacity branch; keep the CPU path identical.
+    if getattr(config, "OPACITY_CHANGE", False):
+        flags |= RenderFlag.OPACITY_CHANGE
     if not getattr(config, "NO_BKGD_DOPPLER", False):
         flags |= RenderFlag.BACKGROUND_DOPPLER
 

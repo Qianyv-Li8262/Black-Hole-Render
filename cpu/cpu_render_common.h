@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 #pragma once
+#include "../krnls/radiative_transfer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,7 @@ enum RenderFlag : std::uint32_t {
     DEPTH_JITTER = 1u << 1,
     RAND_SAMP_DISK = 1u << 2,
     OPACITY_CHANGE = 1u << 3,
+    DISK_COEFFICIENTS = 1u << 7,
     BACKGROUND_DOPPLER = 1u << 4,
     DISK_DOPPLER_FOLLOW_BACKGROUND = 1u << 5,
     PHOTON_RING_OPTIMIZATION = 1u << 6,

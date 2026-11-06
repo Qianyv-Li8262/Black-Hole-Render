@@ -10,6 +10,7 @@ import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
+from helpers.disk_cache import load_disk_cache
 import glfw
 from cupyx.scipy.ndimage import gaussian_filter
 import os, sys
@@ -23,7 +24,7 @@ if img_bgr is None:
     print(f"错误:无法在路径 {img_file_path} 找到背景图片!")
     exit() 
 
-img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*100
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*330.0
 img_float = cp.asarray(img_rgb.astype(np.float32))
 del img_rgb
 img_rgba = cp.zeros((*img_float.shape[:2], 4), dtype=cp.float16)
@@ -31,9 +32,8 @@ img_rgba[:, :, :3] = img_float
 tex_handle = create_texture_array_2d(img_rgba, 4, (1, 1, 1, 1), True)
 
 print('正在加载预烘焙吸积盘纹理...')
-prebaked_data = np.load(os.path.join(base_path, 'cache', 'prebaked_disk_noise_npgs.npy'))
-ishalf = True
-tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float16), 4, (1, 1, 1, 1, 1), is_half=ishalf)
+prebaked_data = load_disk_cache(os.path.join(base_path, 'cache', 'disk_native34_coefficients.npy'), coefficients=True)
+tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float32), 4, (0, 0, 1, 1, 1), is_half=False)
 del prebaked_data
 
 colorlut_file_path = os.path.join(base_path, 'cache', 'color_lut2.npy')
@@ -50,7 +50,7 @@ with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
 include_dir = os.path.dirname(os.path.abspath(kernel_path)) 
-module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{os.path.join(base_path, "krnls")}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK'))
+module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{os.path.join(base_path, "krnls")}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK','-DDISK_COEFFICIENTS'))
 trace_rays_kernel = module.get_function("blackholekernel")
 
 bloom_path = os.path.join(base_path, "krnls", "bloom.cu")

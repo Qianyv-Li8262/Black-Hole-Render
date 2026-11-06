@@ -38,14 +38,18 @@ SSAA_COUNT = 256  # 每像素采样数
 # ========== 模拟时间 ==========
 start_t      = 20.5   # 起始坐标时
 total_frames = 1      # 总帧数
-d_tau        = 0.1    # 多帧渲染的场景时间步长
+d_tau        = 0.1    # render_single: 每帧相机固有时间间隔；坐标时由自由落体同步推进
 
-# ========== 多普勒 / 相机速度 (beta) ==========
+# ========== 相机初速 (beta=v/c，依次沿相机前/右/上方向) ==========
+# render_single 从 cam_pos_init 以此初速自由落体；全为0表示从静止释放。
 vx, vy, vz = 0.1574, 0.5873, 0
 
 # ========== 文件路径(相对于项目根目录) ==========
 skybox_path         = 'assets/starmap_random_2020_16k.exr'
-prebaked_disk_path  = 'cache/prebaked_disk_noise_npgs.npy'
+prebaked_disk_path  = 'cache/disk_native34_coefficients.npy'
+# 用 python tools/prebake_disk_noise_npgs.py 生成旧厚云团后，可切换为
+# 同时设置 DISK_COEFFICIENTS=False、OPACITY_CHANGE=True
+# prebaked_disk_path = 'cache/prebaked_disk_clouds.npy'
 color_lut_path      = 'cache/color_lut2.npy'
 kernel_path         = 'krnls/disk.cu'
 bloom_kernel_path   = 'krnls/bloom.cu'
@@ -57,6 +61,10 @@ USE_RK4           = False
 NO_DEPTH_JITTER   = True
 RAND_SAMP_DISK    = True
 NO_BKGD_DOPPLER   = False
-OPACITY_CHANGE    = False  # 当前渲染路径暂不启用；设为 True 时会打印提示
+OPACITY_CHANGE    = False  # 旧材质选项；DISK_COEFFICIENTS=True 时由新缓存直接提供消光
 USE_ACES          = True
 NOT_USE_S_CURVE   = False
+
+# 3+4+5消光 + main温度扰动；修改 cfg/disk_material.json 后重新烘焙
+DISK_COEFFICIENTS = True
+SKYBOX_SCALE = 330.0  # 原离线星空曝光33的10倍

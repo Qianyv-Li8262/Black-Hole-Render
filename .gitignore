@@ -2,6 +2,9 @@
 *.jpg
 *.ptx
 *.npy
+*.csv
+cache/disk_native34_coefficients.json
+cache/disk_native34_fine.json
 !cache/color_lut2.npy
 !cache/prebaked_disk_noise_npgs.npy
 !docs/images/*.png

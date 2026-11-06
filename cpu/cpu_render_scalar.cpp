@@ -201,7 +201,7 @@ void render_one_tile_scalar(float *raw, const Texture2D &background, const Textu
 
                     const float disk_radius_sq = disk_pos.x * disk_pos.x + disk_pos.y * disk_pos.y;
                     const bool in_disk =
-                        disk_radius_sq > 24.4974f && disk_radius_sq < 1225.0f && std::fabs(cam_pos.z) < 2.5f;
+                        disk_radius_sq > 24.4974f && disk_radius_sq < 1225.0f && std::fabs(disk_pos.z) < 2.5f;
                     if (in_disk) {
                         const float disk_radius = std::sqrt(disk_radius_sq);
                         float td = 0.0f;
@@ -214,44 +214,43 @@ void render_one_tile_scalar(float *raw, const Texture2D &background, const Textu
                                         (disk_radius - 4.9495f) / 30.0505f);
                         const float g = std::fmax(
                             (std::fabs((factor * gamma + p_init * e0) / (td - pd * lz)) - 1.0f) + 1.0f, 0.01f);
-                        const float ravg2 = length(prev_pos) + radius;
-                        const float uuu = 1.0f + 1.0f / ravg2;
                         const float g4 = g * g * g * g;
                         const float step_len = length(cam_pos - prev_pos);
+                        const float fluid_step = bh_transfer::comoving_path_length(
+                            step_len, 0.5f / length(disk_pos), td - pd * lz);
                         const float kzg4 = 2.0f * disk_parameters.z;
                         float step_opacity;
-                        if (has_flag(params, OPACITY_CHANGE)) {
-                            const float temp_eff = disk_parameters.y * g;
-                            const float cold_factor = 1.0f + 2.0f * saturate((5000.0f - temp_eff) / 3000.0f);
-                            step_opacity = disk_parameters.x * 3.0f * uuu * uuu *
-                                           std::fma(step_len, -std::exp(-kzg4 * kzg4), step_len) / g * cold_factor;
+                        float source_scale = 1.0f;
+                        if (has_flag(params, DISK_COEFFICIENTS)) {
+                            step_opacity=std::fmax(disk_parameters.x,0.0f)*fluid_step;
+                        } else if (has_flag(params, OPACITY_CHANGE)) {
+                            const float cold_fraction = saturate(disk_parameters.w);
+                            const float opacity_scale = 0.6f + 8.4f * cold_fraction;
+                            step_opacity = std::fmax(disk_parameters.x, 0.0f) * opacity_scale * fluid_step;
+                            source_scale = 1.7f / opacity_scale;
                         } else {
-                            step_opacity = disk_parameters.x * 1.7f * uuu * uuu *
-                                           std::fma(step_len, -std::exp(-kzg4 * kzg4), step_len) / g;
+                            step_opacity = std::fmax(disk_parameters.x, 0.0f) * 1.7f * fluid_step *
+                                           bh_transfer::absorbed_fraction(kzg4 * kzg4);
                         }
-                        const float temp_exp = -std::exp(-step_opacity);
                         float4 emission;
                         if (has_flag(params, DISK_DOPPLER_FOLLOW_BACKGROUND)) {
                             float4 color = color_lut.sample((disk_parameters.y - 510.0f) / 20000.0f, 0.5f);
                             const float3 shifted_rgb =
                                 rgb_three_line_frequency_shift(make_float3(color.x, color.y, color.z), g);
-                            emission = make_float4(shifted_rgb.x * disk_parameters.z * g4,
-                                                   shifted_rgb.y * disk_parameters.z * g4,
-                                                   shifted_rgb.z * disk_parameters.z * g4, 1.0f);
+                            emission = make_float4(shifted_rgb.x * disk_parameters.z * g,
+                                                   shifted_rgb.y * disk_parameters.z * g,
+                                                   shifted_rgb.z * disk_parameters.z * g, 1.0f);
                         } else {
                             emission = disk_emission_dep(std::fmax(disk_parameters.y * g, 1000.0f),
                                                          disk_parameters.z * g4, color_lut);
                         }
 
-                        float temp_calc = std::fma(emission.x, -accumulated_color.w, emission.x);
-                        accumulated_color.x += std::fma(temp_calc, temp_exp, temp_calc);
-                        temp_calc = std::fma(emission.y, -accumulated_color.w, emission.y);
-                        accumulated_color.y += std::fma(temp_calc, temp_exp, temp_calc);
-                        temp_calc = std::fma(emission.z, -accumulated_color.w, emission.z);
-                        accumulated_color.z += std::fma(temp_calc, temp_exp, temp_calc);
-                        temp_calc = 1.0f - accumulated_color.w;
-                        accumulated_color.w += std::fma(temp_calc, temp_exp, temp_calc);
-                        if (accumulated_color.w > 0.99f)
+                        emission = emission * source_scale;
+                        const float weight = (has_flag(params, DISK_COEFFICIENTS) ? bh_transfer::emission_weight(accumulated_color.w, disk_parameters.x, fluid_step) : bh_transfer::segment_weight(accumulated_color.w, step_opacity));
+                        accumulated_color.x = std::fma(emission.x, weight, accumulated_color.x);
+                        accumulated_color.y = std::fma(emission.y, weight, accumulated_color.y);
+                        accumulated_color.z = std::fma(emission.z, weight, accumulated_color.z);
+                        if (!has_flag(params, DISK_COEFFICIENTS) && accumulated_color.w > (has_flag(params, OPACITY_CHANGE) ? 9.21034037f : 4.60517019f))
                             trace = false;
                     }
 
@@ -274,9 +273,9 @@ void render_one_tile_scalar(float *raw, const Texture2D &background, const Textu
                         bkgd.y = shifted_rgb.y;
                         bkgd.z = shifted_rgb.z;
                     }
-                    color = accumulated_color + bkgd * (1.0f - accumulated_color.w);
+                    color = accumulated_color + bkgd * std::exp(-accumulated_color.w);
                 } else {
-                    color = accumulated_color + make_float4(0.0f, 0.0f, 0.0f, 1.0f) * (1.0f - accumulated_color.w);
+                    color = accumulated_color;
                 }
                 buffer = buffer + color;
             }
