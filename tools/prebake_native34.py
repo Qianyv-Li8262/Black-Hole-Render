@@ -27,6 +27,9 @@ SETTING_KEYS = (
 
 SOURCE=r'''
 #include "cuda_noise.cuh"
+#ifndef DISK_NOISE_SEED
+#define DISK_NOISE_SEED 1919810
+#endif
 __device__ float smooth_unit(float t) {
     t = __saturatef(t);
     return t*t*(3-2*t);
@@ -42,7 +45,7 @@ __device__ float filtered_noise(float3 p,float footprint,int start,float roughne
                      smooth_unit((0.5f-frequency*footprint)/0.35f);
         if(weight<=0) break;
         float3 q=make_float3(p.x*frequency,p.y*frequency,p.z*frequency);
-        acc*=1+0.1f*weight*cudaNoise::npgsValueNoise3D(q,1919810);
+        acc*=1+0.1f*weight*cudaNoise::npgsValueNoise3D(q,DISK_NOISE_SEED);
     }
     float x=80*logf(acc*0.1f);
     return fmaxf(x,0.0f)+log1pf(expf(-fabsf(x)));
@@ -56,14 +59,14 @@ extern "C" __global__ void bake(cudaTextureObject_t physical,const float* core,
     float z=((iz+.5f)/nz-.5f)*5.0f,phi=(ip+.5f)/np*6.283185307f;
     float4 radial=tex2D<float4>(physical,(r-4.9495f)/30.0505f,0.0f);
     float3 p=make_float3(.1f*r,.1f*z,.02f*powf(r,.7f)*phi);
-    float Q=cudaNoise::npgsAccretionDiskNoise(p,2,11,80,1919810);
-    float n=cudaNoise::npgsAccretionDiskNoiseCentered(p,2,11,80,3.5f,.1f,.2f,4,1919810)*__saturatef(6.9f-.2f*r);
+    float Q=cudaNoise::npgsAccretionDiskNoise(p,2,11,80,DISK_NOISE_SEED);
+    float n=cudaNoise::npgsAccretionDiskNoiseCentered(p,2,11,80,3.5f,.1f,.2f,4,DISK_NOISE_SEED)*__saturatef(6.9f-.2f*r);
     float flow=phi+.7f*logf(r/4.9495f);
     float3 hp=make_float3(.28f*r*cosf(flow),.28f*r*sinf(flow),0);
     float H=(settings[4]+(settings[5]-settings[4])*powf((r-4.9495f)/30.0505f,.75f))*
-        (1+settings[6]*cudaNoise::simplexNoise(hp,1,1919827));
+        (1+settings[6]*cudaNoise::simplexNoise(hp,1,DISK_NOISE_SEED+17));
     H=fmaxf(H,.01f);
-    float middle=settings[7]*H*cudaNoise::simplexNoise(hp,1.3f,1919833);
+    float middle=settings[7]*H*cudaNoise::simplexNoise(hp,1.3f,DISK_NOISE_SEED+23);
     float q=(z-middle)/H;
     float D=expf(-.25f*q*q)*smooth_unit((2.5f-fabsf(z)))*smooth_unit((35-r)/7);
     // Independent texture contrast: 1 reproduces Q, 0 removes its modulation.
@@ -119,9 +122,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--settings', type=Path, default=ROOT / 'cfg/disk_material.json')
     parser.add_argument('--output', type=Path, default=ROOT / 'cache/disk_native34_coefficients.npy')
+    parser.add_argument('--seed', type=int, default=1919810, help='Independent cloud realization; default preserves A')
     parser.add_argument('--resolution', type=int, nargs=3, metavar=('R', 'Z', 'PHI'),
                         help='Override bake resolution without editing material settings')
     args = parser.parse_args()
+    if not 0 <= args.seed <= 2147483624:
+        parser.error('--seed must be in [0, 2147483624]')
     settings_bytes = args.settings.read_bytes()
     settings = json.loads(settings_bytes)
     settings.setdefault('emission_noise_power', 1.0)
@@ -177,7 +183,7 @@ def main():
         out = cp.empty((nr, nz, nphi, 4), cp.float32)
         adjusted = filtered or values[9] != 1 or values[10] != 1
         reference = cp.empty((nr, nz, nphi, 4) if adjusted else (1,), cp.float32)
-        options = [f'-I{ROOT / "krnls"}']
+        options = [f'-I{ROOT / "krnls"}', f'-DDISK_NOISE_SEED={args.seed}']
         if filtered:
             options.append('-DDISK_FILTERED_NOISE')
         cp.RawKernel(SOURCE, 'bake', options=tuple(options))(
@@ -213,7 +219,7 @@ def main():
     metadata = dict(
         format='native34-coefficients-v1',
         channels=['extinction', 'temperature', 'emission', 'reserved'],
-        dtype='float32', settings=settings,
+        dtype='float32', settings=settings, noise_seed=args.seed,
         noise_normalization='per-radius-coefficient-sum-v1',
         noise_filter='voxel-footprint-fade-and-8-point-coefficient-average-v1' if filtered_noise else 'none',
         settings_sha256=hashlib.sha256(settings_bytes).hexdigest(),

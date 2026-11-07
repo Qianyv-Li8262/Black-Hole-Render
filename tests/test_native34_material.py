@@ -39,6 +39,22 @@ class CacheFormatTests(unittest.TestCase):
 
 @unittest.skipUnless(GPU_AVAILABLE, 'CuPy and a CUDA GPU are required')
 class MaterialBakeTests(unittest.TestCase):
+    def test_seed_is_reproducible_and_produces_independent_clouds(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
+            directory = Path(directory)
+            def bake(name, seed):
+                output = directory / (name + '.npy')
+                subprocess.run([sys.executable, str(ROOT / 'tools/prebake_native34.py'),
+                    '--resolution', '16', '8', '32', '--seed', str(seed), '--output', str(output)],
+                    cwd=ROOT, capture_output=True, check=True)
+                self.assertEqual(json.loads(output.with_suffix('.json').read_text())['noise_seed'], seed)
+                return load_disk_cache(output, coefficients=True)
+            a = bake('a', 1919810)
+            np.testing.assert_array_equal(a, bake('repeat', 1919810))
+            b = bake('b', 2718281)
+            for channel in range(3):
+                self.assertFalse(np.array_equal(a[..., channel], b[..., channel]))
+
     def test_filtered_noise_preserves_radial_profiles_and_reduces_fine_grain(self):
         settings = json.loads((ROOT / 'cfg/disk_material.json').read_text())
         settings['resolution'] = [64, 32, 128]
