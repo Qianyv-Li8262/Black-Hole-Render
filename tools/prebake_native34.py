@@ -23,6 +23,9 @@ SETTING_KEYS = (
     'temperature_noise_strength',
     'emission_noise_power', 'extinction_noise_power',
     'noise_octave_start', 'noise_roughness',
+    'height_power', 'height_transition_end', 'height_edge_softness',
+    'vertical_half_extent', 'height_transition_start',
+    'outer_height_multiplier',
 )
 
 SOURCE=r'''
@@ -56,26 +59,50 @@ extern "C" __global__ void bake(cudaTextureObject_t physical,const float* core,
     int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=nr*nz*np)return;
     int ip=i%np,iz=(i/np)%nz,ir=i/(np*nz);
     float r=4.9495f+30.0505f*(ir+.5f)/nr;
-    float z=((iz+.5f)/nz-.5f)*5.0f,phi=(ip+.5f)/np*6.283185307f;
+    float z=((iz+.5f)/nz-.5f)*2*settings[16],phi=(ip+.5f)/np*6.283185307f;
     float4 radial=tex2D<float4>(physical,(r-4.9495f)/30.0505f,0.0f);
     float3 p=make_float3(.1f*r,.1f*z,.02f*powf(r,.7f)*phi);
     float Q=cudaNoise::npgsAccretionDiskNoise(p,2,11,80,DISK_NOISE_SEED);
     float n=cudaNoise::npgsAccretionDiskNoiseCentered(p,2,11,80,3.5f,.1f,.2f,4,DISK_NOISE_SEED)*__saturatef(6.9f-.2f*r);
     float flow=phi+.7f*logf(r/4.9495f);
     float3 hp=make_float3(.28f*r*cosf(flow),.28f*r*sinf(flow),0);
+#ifdef DISK_BOUNDED_FLARE
+    // H is the actual half-thickness here, rather than a Gaussian scale.
+    // Smooth endpoints keep the ISCO thin and reach full height before the
+    // radial fade at r=28. Stay inside the shared CPU/GPU texture domain.
+    float flare=powf(smooth_unit((r-settings[17])/(settings[14]-settings[17])),settings[13]);
+    float H=(settings[4]+(settings[5]-settings[4])*flare)*
+        (1+settings[6]*cudaNoise::simplexNoise(hp,1,DISK_NOISE_SEED+17));
+    H=fminf(fmaxf(H,.01f),settings[16]/(1+settings[7]));
+    float middle=settings[7]*H*cudaNoise::simplexNoise(hp,1.3f,DISK_NOISE_SEED+23);
+    float q=(z-middle)/H;
+    float D=expf(-.25f*q*q)*smooth_unit((1-fabsf(q))/settings[15])*smooth_unit((35-r)/7);
+#else
     float H=(settings[4]+(settings[5]-settings[4])*powf((r-4.9495f)/30.0505f,.75f))*
         (1+settings[6]*cudaNoise::simplexNoise(hp,1,DISK_NOISE_SEED+17));
     H=fmaxf(H,.01f);
     float middle=settings[7]*H*cudaNoise::simplexNoise(hp,1.3f,DISK_NOISE_SEED+23);
-    float q=(z-middle)/H;
-    float D=expf(-.25f*q*q)*smooth_unit((2.5f-fabsf(z)))*smooth_unit((35-r)/7);
+#ifdef DISK_OUTER_FLARE
+    // Stretch the original envelope only outside the hot inner region.
+    // At flare=0 this is precisely the old Gaussian, warp and 2.5M cutoff.
+    float flare=powf(smooth_unit((r-settings[17])/(settings[14]-settings[17])),settings[13]);
+    float stretch=1+(settings[18]-1)*flare;
+    float envelope_z=z/stretch;
+    float support=2.5f;
+#else
+    float envelope_z=z;
+    float support=settings[16];
+#endif
+    float q=(envelope_z-middle)/H;
+    float D=expf(-.25f*q*q)*smooth_unit((support-fabsf(envelope_z)))*smooth_unit((35-r)/7);
+#endif
     // Independent texture contrast: 1 reproduces Q, 0 removes its modulation.
     // Keep exact zeros for positive powers so noise gaps are not filled in.
     float emission_noise=settings[9]==0 ? 1.0f : (settings[9]==1 ? Q : powf(Q,settings[9]));
     float extinction_noise=settings[10]==0 ? 1.0f : (settings[10]==1 ? Q : powf(Q,settings[10]));
     float temperature_noise=expf(settings[8]*n);
 #ifdef DISK_FILTERED_NOISE
-    float dr=30.0505f/nr,dz=5.0f/nz,dphi=6.283185307f/np;
+    float dr=30.0505f/nr,dz=2*settings[16]/nz,dphi=6.283185307f/np;
     float radial_phi=0.014f*powf(r,-0.3f)*phi*dr;
     float footprint=fmaxf(sqrtf(0.01f*dr*dr+radial_phi*radial_phi),
                          fmaxf(0.1f*dz,0.02f*powf(r,0.7f)*dphi));
@@ -118,6 +145,24 @@ extern "C" __global__ void bake(cudaTextureObject_t physical,const float* core,
 '''
 
 
+def temperature_flare_radii(physical, hot, cool):
+    """Find cooling-branch crossings of the unperturbed midplane LUT."""
+    if not np.isfinite([hot, cool]).all() or not hot > cool > 0:
+        raise ValueError('Height temperatures require hot > cool > 0')
+    temperatures = np.asarray(physical)[0, :, 1]
+    radii = 4.9495 + 30.0505*(np.arange(len(temperatures))+.5)/len(temperatures)
+    peak = int(np.argmax(temperatures))
+    def crossing(threshold):
+        candidates = np.flatnonzero((temperatures[peak:-1] >= threshold) &
+                                    (temperatures[peak+1:] < threshold))
+        if not len(candidates):
+            raise ValueError(f'No outer cooling-branch LUT crossing at {threshold} K')
+        i = peak + int(candidates[0])
+        return float(radii[i] + (radii[i+1]-radii[i]) *
+                     (temperatures[i]-threshold)/(temperatures[i]-temperatures[i+1]))
+    return crossing(hot), crossing(cool)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--settings', type=Path, default=ROOT / 'cfg/disk_material.json')
@@ -136,6 +181,41 @@ def main():
     settings.setdefault('noise_octave_start', 2)
     settings.setdefault('noise_roughness', 1.0)
     settings.setdefault('noise_filter_mix', 1.0)
+    settings.setdefault('envelope_mode', 'legacy')
+    settings.setdefault('height_power', 1.5)
+    settings.setdefault('height_transition_end', 26.0)
+    settings.setdefault('height_edge_softness', 0.3)
+    settings.setdefault('vertical_half_extent', 2.5)
+    settings.setdefault('height_transition_start', 4.9495)
+    settings.setdefault('outer_height_multiplier', 1.0)
+    if 'height_temperature_start' in settings or 'height_temperature_end' in settings:
+        physical = np.load(ROOT / 'cache/disk_lut_for_mov_disk.npy')
+        start, end = temperature_flare_radii(physical, settings['height_temperature_start'],
+                                            settings['height_temperature_end'])
+        settings['height_transition_start'], settings['height_transition_end'] = start, end
+        print(f'Height flare: {start:.4f}M -> {end:.4f}M (base LUT cooling branch)', flush=True)
+    if settings['envelope_mode'] not in ('legacy', 'bounded_flare', 'legacy_outer_flare'):
+        raise ValueError('envelope_mode must be legacy, bounded_flare or legacy_outer_flare')
+    if settings['envelope_mode'] == 'legacy_outer_flare' and (
+            not np.isfinite(settings['outer_height_multiplier'])
+            or settings['outer_height_multiplier'] < 1
+            or settings['vertical_half_extent'] < 2.5*settings['outer_height_multiplier']):
+        raise ValueError('Outer multiplier must be >= 1 and vertical extent >= 2.5 * multiplier')
+    if (not np.isfinite([settings['height_power'], settings['height_transition_end'],
+                         settings['height_edge_softness']]).all()
+            or settings['height_power'] <= 0
+            or not 4.9495 < settings['height_transition_end'] <= 35
+            or not 0 < settings['height_edge_softness'] <= 1):
+        raise ValueError('Height requires power > 0, 4.9495 < transition end <= 35, 0 < edge softness <= 1')
+    if settings['envelope_mode'] == 'bounded_flare' and (
+            not 0 < settings['height_inner'] <= settings['height_outer'] <= settings['vertical_half_extent']
+            or not 0 <= settings['height_variation'] < 1
+            or not 0 <= settings['midplane_warp'] < 1):
+        raise ValueError('Bounded flare requires 0 < inner <= outer <= vertical extent and variation/warp in [0, 1)')
+    if (not np.isfinite([settings['vertical_half_extent'], settings['height_transition_start']]).all()
+            or settings['vertical_half_extent'] <= 0
+            or not 4.9495 <= settings['height_transition_start'] < settings['height_transition_end']):
+        raise ValueError('Vertical extent must be positive; ISCO <= height transition start < end required')
     if settings['noise_mode'] not in ('legacy', 'filtered'):
         raise ValueError('noise_mode must be legacy or filtered')
     filtered_noise = settings['noise_mode'] == 'filtered'
@@ -184,6 +264,10 @@ def main():
         adjusted = filtered or values[9] != 1 or values[10] != 1
         reference = cp.empty((nr, nz, nphi, 4) if adjusted else (1,), cp.float32)
         options = [f'-I{ROOT / "krnls"}', f'-DDISK_NOISE_SEED={args.seed}']
+        if settings['envelope_mode'] == 'bounded_flare':
+            options.append('-DDISK_BOUNDED_FLARE')
+        if settings['envelope_mode'] == 'legacy_outer_flare':
+            options.append('-DDISK_OUTER_FLARE')
         if filtered:
             options.append('-DDISK_FILTERED_NOISE')
         cp.RawKernel(SOURCE, 'bake', options=tuple(options))(
@@ -220,6 +304,7 @@ def main():
         format='native34-coefficients-v1',
         channels=['extinction', 'temperature', 'emission', 'reserved'],
         dtype='float32', settings=settings, noise_seed=args.seed,
+        vertical_half_extent=settings['vertical_half_extent'],
         noise_normalization='per-radius-coefficient-sum-v1',
         noise_filter='voxel-footprint-fade-and-8-point-coefficient-average-v1' if filtered_noise else 'none',
         settings_sha256=hashlib.sha256(settings_bytes).hexdigest(),

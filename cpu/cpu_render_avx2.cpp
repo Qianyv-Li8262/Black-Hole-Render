@@ -634,8 +634,8 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                         const __m256 k_t1 = _mm256_div_ps(uplsq, _mm256_mul_ps(umi, umi));
                         const __m256 in_volume =
                             _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(radius, v8(4.5f), _CMP_GT_OQ),
-                                                        _mm256_cmp_ps(radius, v8(27.0f), _CMP_LT_OQ)),
-                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(3.0f), _CMP_LT_OQ));
+                                                        _mm256_cmp_ps(radius, v8(params.disk_half_extent > 2.5f ? 37.0f : 27.0f), _CMP_LT_OQ)),
+                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(params.disk_half_extent + 0.5f), _CMP_LT_OQ));
                         __m256 disk_zone = _mm256_mul_ps(cam_pos.z, cam_pos.z);
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.25f));
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.15f));
@@ -729,7 +729,7 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                         const __m256 in_volume =
                             _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(radius, v8(4.5f), _CMP_GT_OQ),
                                                         _mm256_cmp_ps(radius, v8(37.0f), _CMP_LT_OQ)),
-                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(3.0f), _CMP_LT_OQ));
+                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(params.disk_half_extent + 0.5f), _CMP_LT_OQ));
                         __m256 disk_zone = _mm256_mul_ps(cam_pos.z, cam_pos.z);
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.25f));
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.15f));
@@ -797,7 +797,7 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                     __m256 in_disk =
                         _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(disk_radius_sq, v8(24.4974f), _CMP_GT_OQ),
                                                     _mm256_cmp_ps(disk_radius_sq, v8(1225.0f), _CMP_LT_OQ)),
-                                      _mm256_cmp_ps(v8_abs(disk_pos.z), v8(2.5f), _CMP_LT_OQ));
+                                      _mm256_cmp_ps(v8_abs(disk_pos.z), v8(params.disk_half_extent), _CMP_LT_OQ));
                     in_disk = _mm256_and_ps(in_disk, active);
 
                     if (any_lane(in_disk)) {
@@ -817,7 +817,7 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                             fast_mod2pi_v8(_mm256_add_ps(atan2_v8(disk_pos.y, disk_pos.x), rotation));
                         const float4x8 disk_parameters = sample_texture3d_v8(
                             disk, _mm256_mul_ps(phi_final, v8(0.15915494f)),
-                            _mm256_add_ps(_mm256_div_ps(disk_pos.z, v8(5.0f)), v8(0.5f)),
+                            _mm256_add_ps(_mm256_div_ps(disk_pos.z, v8(2.0f * params.disk_half_extent)), v8(0.5f)),
                             _mm256_div_ps(_mm256_sub_ps(disk_radius, v8(4.9495f)), v8(30.0505f)), in_disk);
                         const __m256 p_init_dot_e0 = v3_dot(p_init, e0v);
                         __m256 g = _mm256_div_ps(_mm256_add_ps(v8(initial_factor * gamma), p_init_dot_e0),

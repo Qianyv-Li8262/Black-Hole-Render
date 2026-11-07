@@ -22,7 +22,7 @@ import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
-from helpers.disk_cache import load_disk_cache
+from helpers.disk_cache import load_disk_cache, disk_half_extent
 import os, sys, gc, json
 from cfg import offline as cfg
 from cfg.offline import *
@@ -96,6 +96,8 @@ if disk_loop:
     disk_b_path = getattr(cfg, 'DISK_LOOP_TEXTURE_B', None)
     if not disk_b_path:
         raise ValueError('Set DISK_LOOP_TEXTURE_B to a separately baked coefficient texture')
+    if disk_half_extent(os.path.join(base_path, disk_b_path)) != disk_half_extent(os.path.join(base_path, prebaked_disk_path)):
+        raise ValueError('Disk loop A/B vertical domains differ; rebake both textures')
     prebaked_b = load_disk_cache(os.path.join(base_path, disk_b_path), coefficients=True)
     tex_prebaked_b = create_texture_array_3d(cp.asarray(prebaked_b, dtype=cp.float32),
                                            4, (0, 0, 1, 1, 1))
@@ -116,7 +118,7 @@ print('正在编译 CUDA kernel...')
 _trace_src = os.path.join(base_path, kernel_path)
 with open(_trace_src, "r", encoding="utf-8") as f:
     cuda_source = f.read()
-compile_opts = ['-use_fast_math', f'-I{os.path.join(base_path, "krnls")}', '-lineinfo']
+compile_opts = [f'-DDISK_HALF_EXTENT={disk_half_extent(os.path.join(base_path, prebaked_disk_path))}f', '-use_fast_math', f'-I{os.path.join(base_path, "krnls")}', '-lineinfo']
 if USE_RK4:
     compile_opts.append('-DUSE_RK4')
 if NO_DEPTH_JITTER:

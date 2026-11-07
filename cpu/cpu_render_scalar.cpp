@@ -84,7 +84,7 @@ void render_one_tile_scalar(float *raw, const Texture2D &background, const Textu
                         const float3 k11 = p * uu;
                         const float3 k12 = gravity * cam_pos;
                         const float k_t1 = uplsq / (umi * umi);
-                        const bool in_disk_volume = radius > 4.5f && radius < 27.0f && std::fabs(cam_pos.z) < 3.0f;
+                        const bool in_disk_volume = radius > 4.5f && radius < (params.disk_half_extent > 2.5f ? 37.0f : 27.0f) && std::fabs(cam_pos.z) < (params.disk_half_extent + 0.5f);
                         const float zone_multiplier =
                             in_disk_volume ? 0.05f + 0.15f * (cam_pos.z * cam_pos.z * 0.25f) : 1.0f;
                         float current_step =
@@ -151,7 +151,7 @@ void render_one_tile_scalar(float *raw, const Texture2D &background, const Textu
                         float uu = 1.0f / (uplsq * uplsq);
                         const float3 k11 = p * uu;
                         const float3 k12 = gravity * cam_pos;
-                        const bool in_disk_volume = radius > 4.5f && radius < 37.0f && std::fabs(cam_pos.z) < 3.0f;
+                        const bool in_disk_volume = radius > 4.5f && radius < 37.0f && std::fabs(cam_pos.z) < (params.disk_half_extent + 0.5f);
                         const float zone_multiplier =
                             in_disk_volume ? 0.05f + 0.15f * (cam_pos.z * cam_pos.z * 0.25f) : 1.0f;
                         float current_step =
@@ -201,7 +201,7 @@ void render_one_tile_scalar(float *raw, const Texture2D &background, const Textu
 
                     const float disk_radius_sq = disk_pos.x * disk_pos.x + disk_pos.y * disk_pos.y;
                     const bool in_disk =
-                        disk_radius_sq > 24.4974f && disk_radius_sq < 1225.0f && std::fabs(disk_pos.z) < 2.5f;
+                        disk_radius_sq > 24.4974f && disk_radius_sq < 1225.0f && std::fabs(disk_pos.z) < params.disk_half_extent;
                     if (in_disk) {
                         const float disk_radius = std::sqrt(disk_radius_sq);
                         float td = 0.0f;
@@ -210,7 +210,7 @@ void render_one_tile_scalar(float *raw, const Texture2D &background, const Textu
                         const float rotation = pd * (params.time - disk_time) / td;
                         const float phi_final = fast_mod2pi(std::atan2(disk_pos.y, disk_pos.x) + rotation);
                         const float4 disk_parameters =
-                            disk.sample(phi_final * 0.15915494f, (disk_pos.z / 2.5f) / 2.0f + 0.5f,
+                            disk.sample(phi_final * 0.15915494f, disk_pos.z / (2.0f * params.disk_half_extent) + 0.5f,
                                         (disk_radius - 4.9495f) / 30.0505f);
                         const float g = std::fmax(
                             (std::fabs((factor * gamma + p_init * e0) / (td - pd * lz)) - 1.0f) + 1.0f, 0.01f);

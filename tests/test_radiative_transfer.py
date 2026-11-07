@@ -40,6 +40,19 @@ def beam_textures():
 
 
 class CpuTransferTests(unittest.TestCase):
+    def test_expanded_disk_domain_is_used_by_all_cpu_backends(self):
+        native = render_cpu._native_module()
+        textures = beam_textures()
+        params = replace(beam_params(), flags=render_cpu.RenderFlag.DISK_COEFFICIENTS)
+        scalar = native._render_new_scalar_reference
+        narrow = scalar(3, 3, *textures, params._native(), 3, 3, 1)
+        params = replace(params, disk_half_extent=3.5)
+        wide = scalar(3, 3, *textures, params._native(), 3, 3, 1)
+        self.assertLess(float(wide[..., :3].mean()), float(narrow[..., :3].mean()))
+        for backend in (native._render_new_avx2_accurate, native._render_new_avx2_full_math, native.render_new):
+            actual = backend(3, 3, *textures, params._native(), 3, 3, 1)
+            np.testing.assert_allclose(actual, wide, rtol=6e-4, atol=2e-6)
+
     def test_independent_coefficients_emit_with_zero_extinction(self):
         native = render_cpu._native_module()
         background, disk, color = beam_textures()

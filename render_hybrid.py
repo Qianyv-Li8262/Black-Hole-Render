@@ -20,7 +20,7 @@ import traceback
 
 import cv2
 import numpy as np
-from helpers.disk_cache import load_disk_cache
+from helpers.disk_cache import load_disk_cache, disk_half_extent
 
 try:
     import cupy as cp
@@ -165,7 +165,7 @@ class GpuRenderer:
 
     def _compile_kernels(self) -> None:
         kernel_file = BASE_PATH / cfg.kernel_path
-        compile_opts = ["-use_fast_math", f"-I{BASE_PATH / 'krnls'}", "-lineinfo"]
+        compile_opts = [f"-DDISK_HALF_EXTENT={disk_half_extent(BASE_PATH / cfg.prebaked_disk_path)}f", "-use_fast_math", f"-I{BASE_PATH / 'krnls'}", "-lineinfo"]
         if cfg.USE_RK4:
             compile_opts.append("-DUSE_RK4")
         if cfg.NO_DEPTH_JITTER:
@@ -414,6 +414,7 @@ class CpuRenderer:
             jitternum=cfg.SSAA_COUNT,
             frames=frame_idx,
             flags=self.flags,
+            disk_half_extent=disk_half_extent(BASE_PATH / cfg.prebaked_disk_path),
         )
         started = time.perf_counter()
         rgba = self.cpu.render_rgba8_new(

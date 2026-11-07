@@ -611,8 +611,8 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                         const __m512 k_t1 = _mm512_div_ps(uplsq, _mm512_mul_ps(umi, umi));
                         const __m512 in_volume =
                             _mm512_and_ps(_mm512_and_ps(v16_cmp_ps(radius, v16(4.5f), _CMP_GT_OQ),
-                                                        v16_cmp_ps(radius, v16(27.0f), _CMP_LT_OQ)),
-                                          v16_cmp_ps(v16_abs(cam_pos.z), v16(3.0f), _CMP_LT_OQ));
+                                                        v16_cmp_ps(radius, v16(params.disk_half_extent > 2.5f ? 37.0f : 27.0f), _CMP_LT_OQ)),
+                                          v16_cmp_ps(v16_abs(cam_pos.z), v16(params.disk_half_extent + 0.5f), _CMP_LT_OQ));
                         __m512 disk_zone = _mm512_mul_ps(cam_pos.z, cam_pos.z);
                         disk_zone = _mm512_mul_ps(disk_zone, v16(0.25f));
                         disk_zone = _mm512_mul_ps(disk_zone, v16(0.15f));
@@ -706,7 +706,7 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                         const __m512 in_volume =
                             _mm512_and_ps(_mm512_and_ps(v16_cmp_ps(radius, v16(4.5f), _CMP_GT_OQ),
                                                         v16_cmp_ps(radius, v16(37.0f), _CMP_LT_OQ)),
-                                          v16_cmp_ps(v16_abs(cam_pos.z), v16(3.0f), _CMP_LT_OQ));
+                                          v16_cmp_ps(v16_abs(cam_pos.z), v16(params.disk_half_extent + 0.5f), _CMP_LT_OQ));
                         __m512 disk_zone = _mm512_mul_ps(cam_pos.z, cam_pos.z);
                         disk_zone = _mm512_mul_ps(disk_zone, v16(0.25f));
                         disk_zone = _mm512_mul_ps(disk_zone, v16(0.15f));
@@ -774,7 +774,7 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                     __m512 in_disk =
                         _mm512_and_ps(_mm512_and_ps(v16_cmp_ps(disk_radius_sq, v16(24.4974f), _CMP_GT_OQ),
                                                     v16_cmp_ps(disk_radius_sq, v16(1225.0f), _CMP_LT_OQ)),
-                                      v16_cmp_ps(v16_abs(disk_pos.z), v16(2.5f), _CMP_LT_OQ));
+                                      v16_cmp_ps(v16_abs(disk_pos.z), v16(params.disk_half_extent), _CMP_LT_OQ));
                     in_disk = _mm512_and_ps(in_disk, active);
 
                     if (any_lane(in_disk)) {
@@ -794,7 +794,7 @@ void render_one_tile_avx512(float *raw, const Texture2D &background, const Textu
                             fast_mod2pi_v16(_mm512_add_ps(atan2_v16(disk_pos.y, disk_pos.x), rotation));
                         const float4x16 disk_parameters = sample_texture3d_v16(
                             disk, _mm512_mul_ps(phi_final, v16(0.15915494f)),
-                            _mm512_add_ps(_mm512_div_ps(disk_pos.z, v16(5.0f)), v16(0.5f)),
+                            _mm512_add_ps(_mm512_div_ps(disk_pos.z, v16(2.0f * params.disk_half_extent)), v16(0.5f)),
                             _mm512_div_ps(_mm512_sub_ps(disk_radius, v16(4.9495f)), v16(30.0505f)), in_disk);
                         const __m512 p_init_dot_e0 = v3_dot(p_init, e0v);
                         __m512 g = _mm512_div_ps(_mm512_add_ps(v16(initial_factor * gamma), p_init_dot_e0),

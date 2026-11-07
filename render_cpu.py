@@ -61,6 +61,7 @@ class RenderParams:
     step: float = 0.02
     maxstep: int = 4000
     jitternum: int = 2
+    disk_half_extent: float = 2.5
     frames: int = 1
     # Defaults match the source file with no CUDA preprocessor flags set.
     flags: RenderFlag = RenderFlag.DEPTH_JITTER | RenderFlag.BACKGROUND_DOPPLER
@@ -93,6 +94,9 @@ class RenderParams:
         native.step = self.step
         native.maxstep = self.maxstep
         native.jitternum = self.jitternum
+        if not np.isfinite(self.disk_half_extent) or self.disk_half_extent <= 0:
+            raise ValueError("disk_half_extent must be positive and finite")
+        native.disk_half_extent = self.disk_half_extent
         native.frames = self.frames
         native.flags = int(self.flags)
         return native
@@ -354,7 +358,7 @@ def run_full_resolution_low_ssaa_test() -> Path:
     test_width = int(config.w)
     test_height = int(config.h)
     background = _load_background_rgba(_ROOT / config.skybox_path, getattr(config, "SKYBOX_SCALE", 330.0))
-    from helpers.disk_cache import load_disk_cache
+    from helpers.disk_cache import load_disk_cache, disk_half_extent
     prebaked_disk = load_disk_cache(_ROOT / config.prebaked_disk_path, getattr(config,"DISK_COEFFICIENTS",False))
     if not getattr(config,"DISK_COEFFICIENTS",False):
         prebaked_disk=_as_gpu_half_texture(prebaked_disk)
@@ -390,6 +394,7 @@ def run_full_resolution_low_ssaa_test() -> Path:
         jitternum=CPU_TEST_SSAA,
         frames=1,
         flags=flags,
+        disk_half_extent=disk_half_extent(_ROOT / config.prebaked_disk_path),
     )
 
     started = time.perf_counter()

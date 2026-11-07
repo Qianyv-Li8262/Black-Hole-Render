@@ -6,6 +6,16 @@ from pathlib import Path
 import numpy as np
 
 
+def disk_half_extent(path):
+    """Physical vertical texture bound; old caches retain their 2.5M domain."""
+    sidecar = Path(path).with_suffix('.json')
+    metadata = json.loads(sidecar.read_text(encoding='utf-8')) if sidecar.exists() else {}
+    extent = float(metadata.get('vertical_half_extent', 2.5))
+    if not np.isfinite(extent) or extent <= 0:
+        raise ValueError('Disk vertical_half_extent must be positive and finite')
+    return extent
+
+
 def load_disk_cache(path, coefficients=False):
     path = Path(path)
     metadata_path = path.with_suffix('.json')

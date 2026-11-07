@@ -43,6 +43,7 @@ struct render_params {
     float physheight;
     float focal_length;
     float step;
+    float disk_half_extent = 2.5f;
     int maxstep;
     int jitternum;
     int frames;

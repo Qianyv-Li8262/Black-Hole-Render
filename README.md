@@ -153,6 +153,30 @@ Run **`python tools/prebake_native34.py` again after changing the curve**,
 then restart the renderer. `temperature_noise_strength` controls the temperature
 perturbation; the other settings control the flared envelope.
 
+The default `envelope_mode="legacy_outer_flare"` retains the original Gaussian
+inner envelope, including `height_inner=0.22`, `height_outer=1.05`, height
+variation 0.55 and midplane warp 0.35. Only the outer envelope is stretched
+vertically. The stretch is 1 inside the hot region and grows smoothly to
+`outer_height_multiplier=1.6` using the base temperature LUT's outer cooling
+branch: 4500K at r=8.2307M through 1800K at r=13.1373M. Explicit
+`height_transition_start/end` radii are supported when temperature keys are absent.
+With `t=clamp((r-start)/(end-start),0,1)`, the stretch is
+`S=1+(outer_height_multiplier-1)*(t*t*(3-2*t))^height_power` (power 1.5).
+The original envelope is evaluated at `z/S`, including its original +-2.5M
+cutoff. Thus inner geometry is restored while outer vertical support reaches
+8M total, exceeding the Schwarzschild shadow impact radius `sqrt(27)M`.
+This is envelope support; visible thickness depends on opacity and lensing.
+The vertical texture domain is now +-4M and is stored in the JSON sidecar;
+GPU and CPU renderers read it automatically. Older caches default to +-2.5M.
+`envelope_mode="legacy"` selects the original Gaussian without outer stretching;
+`bounded_flare` retains the alternative compact thin-inner profile.
+Rebake **both A and B** when changing the envelope in a looping scene:
+
+```powershell
+python tools/prebake_native34.py
+python tools/prebake_native34.py --seed 2718281 --output cache/disk_native34_b.npy
+```
+
 The two noise powers independently shape `Q^emission_noise_power` and
 `Q^extinction_noise_power`. Both must be finite and nonnegative. Each radial
 shell is normalized to preserve its original integrated emission and extinction,

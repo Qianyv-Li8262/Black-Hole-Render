@@ -10,7 +10,7 @@ import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
-from helpers.disk_cache import load_disk_cache
+from helpers.disk_cache import load_disk_cache, disk_half_extent
 import glfw
 from cupyx.scipy.ndimage import gaussian_filter
 import os, sys
@@ -50,7 +50,7 @@ with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
 include_dir = os.path.dirname(os.path.abspath(kernel_path)) 
-module = cp.RawModule(code=cuda_source, options=('-use_fast_math',f'-I{os.path.join(base_path, "krnls")}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK','-DDISK_COEFFICIENTS'))
+module = cp.RawModule(code=cuda_source, options=(f'-DDISK_HALF_EXTENT={disk_half_extent(os.path.join(base_path, "cache", "disk_native34_coefficients.npy"))}f','-use_fast_math',f'-I{os.path.join(base_path, "krnls")}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK','-DDISK_COEFFICIENTS'))
 trace_rays_kernel = module.get_function("blackholekernel")
 
 bloom_path = os.path.join(base_path, "krnls", "bloom.cu")

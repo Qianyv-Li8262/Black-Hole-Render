@@ -2,6 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 #include "cuda_vec_math_utils.cuh"
 #include "radiative_transfer.h"
+#ifndef DISK_HALF_EXTENT
+#define DISK_HALF_EXTENT 2.5f
+#endif
 #ifdef DISK_LOOP
 #ifndef DISK_COEFFICIENTS
 #error DISK_LOOP requires independent emission/extinction coefficients
@@ -433,7 +436,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
             float k_t1 = uplsq / (umi * umi);
 
             // calc step length
-            bool in_disk_volume = (r > 4.5f && r < 27.0f && fabsf(cam_pos.z) < 3.0f);
+            bool in_disk_volume = (r > 4.5f && r < (DISK_HALF_EXTENT > 2.5f ? 37.0f : 27.0f) && fabsf(cam_pos.z) < (DISK_HALF_EXTENT + 0.5f));
             float zone_multiplier = in_disk_volume ? (0.05f + 0.15f * (cam_pos.z * cam_pos.z * 0.25f)) : 1.0f;
             float current_step =
                 step * fminf(50.0f, fmaxf(0.005f, r - 0.54f)) * zone_multiplier * 5.0f; // 这里RK4放宽步长为5倍
@@ -508,7 +511,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
             float3 k12 = g * cam_pos;
             // float k_t1 = uplsq/(umi*umi);
 
-            bool in_disk_volume = (r > 4.5f && r < 37.0f && fabsf(cam_pos.z) < 3.0f);
+            bool in_disk_volume = (r > 4.5f && r < 37.0f && fabsf(cam_pos.z) < (DISK_HALF_EXTENT + 0.5f));
             float zone_multiplier = in_disk_volume ? (0.05f + 0.15f * (cam_pos.z * cam_pos.z * 0.25f)) : 1.0f;
             float current_step = step * fminf(50.0f, fmaxf(0.005f, r - 0.54f)) * zone_multiplier;
 #ifdef PHOTON_RING_OPT
@@ -553,7 +556,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
             float t_use = (prev_dt + delta_t) * 0.5f;
 #endif
             float r_disk_sq = temp.x * temp.x + temp.y * temp.y;
-            bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 1225.0f && fabsf(temp.z) < 2.5f);
+            bool indisk = (r_disk_sq > 24.4974f && r_disk_sq < 1225.0f && fabsf(temp.z) < DISK_HALF_EXTENT);
 
             if (indisk) {
                 float r_disk = sqrtf(r_disk_sq); // 差动旋转
@@ -581,13 +584,13 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
 
                 float4 parameters = tex3D<float4>(prebaked_disk,
                                                   phi_final * 0.15915494f,        // x → phi
-                                                  (temp.z / 2.5f) / 2 + 0.5f,     // y → z
+                                                  (temp.z / DISK_HALF_EXTENT) / 2 + 0.5f,     // y → z
                                                   (r_disk - 4.9495f) / 30.0505f); // z → r_disk
 
 #ifdef DISK_LOOP
                 float phi_b = fast_mod2pi(atan2f(temp.y, temp.x) + pd * tb / td);
                 float4 parameters_b = tex3D<float4>(prebaked_disk_b, phi_b * 0.15915494f,
-                    (temp.z / 2.5f) / 2 + 0.5f, (r_disk - 4.9495f) / 30.0505f);
+                    (temp.z / DISK_HALF_EXTENT) / 2 + 0.5f, (r_disk - 4.9495f) / 30.0505f);
                 // Same physical bulk velocity for both pattern populations.
                 parameters.x = wa * parameters.x + wb * parameters_b.x;
 #endif

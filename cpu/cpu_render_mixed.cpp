@@ -325,8 +325,8 @@ static void render_one_tile_mixed(float *raw, const Texture2D &background, const
                         const __m256 k_t1 = _mm256_div_ps(uplsq, _mm256_mul_ps(umi, umi));
                         const __m256 in_volume =
                             _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(radius, v8(4.5f), _CMP_GT_OQ),
-                                                        _mm256_cmp_ps(radius, v8(27.0f), _CMP_LT_OQ)),
-                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(3.0f), _CMP_LT_OQ));
+                                                        _mm256_cmp_ps(radius, v8(params.disk_half_extent > 2.5f ? 37.0f : 27.0f), _CMP_LT_OQ)),
+                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(params.disk_half_extent + 0.5f), _CMP_LT_OQ));
                         __m256 disk_zone = _mm256_mul_ps(cam_pos.z, cam_pos.z);
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.25f));
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.15f));
@@ -420,7 +420,7 @@ static void render_one_tile_mixed(float *raw, const Texture2D &background, const
                         const __m256 in_volume =
                             _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(radius, v8(4.5f), _CMP_GT_OQ),
                                                         _mm256_cmp_ps(radius, v8(37.0f), _CMP_LT_OQ)),
-                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(3.0f), _CMP_LT_OQ));
+                                          _mm256_cmp_ps(v8_abs(cam_pos.z), v8(params.disk_half_extent + 0.5f), _CMP_LT_OQ));
                         __m256 disk_zone = _mm256_mul_ps(cam_pos.z, cam_pos.z);
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.25f));
                         disk_zone = _mm256_mul_ps(disk_zone, v8(0.15f));
@@ -488,7 +488,7 @@ static void render_one_tile_mixed(float *raw, const Texture2D &background, const
                     __m256 in_disk =
                         _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(disk_radius_sq, v8(24.4974f), _CMP_GT_OQ),
                                                     _mm256_cmp_ps(disk_radius_sq, v8(1225.0f), _CMP_LT_OQ)),
-                                      _mm256_cmp_ps(v8_abs(disk_pos.z), v8(2.5f), _CMP_LT_OQ));
+                                      _mm256_cmp_ps(v8_abs(disk_pos.z), v8(params.disk_half_extent), _CMP_LT_OQ));
                     in_disk = _mm256_and_ps(in_disk, active);
 
                     if (any_lane(in_disk)) {
@@ -515,7 +515,7 @@ static void render_one_tile_mixed(float *raw, const Texture2D &background, const
                             const float rotation = pd * (params.time - lane_d[lane]) / td;
                             const float phi_final = fast_mod2pi(std::atan2(lane_b[lane], lane_a[lane]) + rotation);
                             const float4 disk_parameters =
-                                disk.sample(phi_final * 0.15915494f, (lane_c[lane] / 2.5f) / 2.0f + 0.5f,
+                                disk.sample(phi_final * 0.15915494f, lane_c[lane] / (2.0f * params.disk_half_extent) + 0.5f,
                                             (disk_radius - 4.9495f) / 30.0505f);
                             const float p_init_dot_e0 = lane_j[lane] * e0.x + lane_k[lane] * e0.y + lane_l[lane] * e0.z;
                             const float g = std::fmax(
@@ -1262,6 +1262,7 @@ PYBIND11_MODULE(cpu_render_native, module)
         .def_readwrite("physheight", &render_params::physheight)
         .def_readwrite("focal_length", &render_params::focal_length)
         .def_readwrite("step", &render_params::step)
+        .def_readwrite("disk_half_extent", &render_params::disk_half_extent)
         .def_readwrite("maxstep", &render_params::maxstep)
         .def_readwrite("jitternum", &render_params::jitternum)
         .def_readwrite("frames", &render_params::frames)

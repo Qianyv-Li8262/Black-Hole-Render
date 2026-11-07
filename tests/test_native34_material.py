@@ -9,7 +9,8 @@ import tempfile
 import unittest
 
 import numpy as np
-from helpers.disk_cache import load_disk_cache
+from helpers.disk_cache import load_disk_cache, disk_half_extent
+from tools.prebake_native34 import temperature_flare_radii
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +26,16 @@ except (ImportError, RuntimeError):
 
 
 class CacheFormatTests(unittest.TestCase):
+    def test_vertical_domain_metadata_is_backward_compatible_and_validated(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
+            path = Path(directory) / 'disk.npy'
+            self.assertEqual(disk_half_extent(path), 2.5)
+            path.with_suffix('.json').write_text(json.dumps({'vertical_half_extent': 3.5}))
+            self.assertEqual(disk_half_extent(path), 3.5)
+            path.with_suffix('.json').write_text(json.dumps({'vertical_half_extent': -1}))
+            with self.assertRaises(ValueError):
+                disk_half_extent(path)
+
     def test_coefficient_cache_cannot_be_read_as_legacy_material(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
             path = Path(directory) / 'disk.npy'
@@ -39,6 +50,84 @@ class CacheFormatTests(unittest.TestCase):
 
 @unittest.skipUnless(GPU_AVAILABLE, 'CuPy and a CUDA GPU are required')
 class MaterialBakeTests(unittest.TestCase):
+    def test_outer_flare_preserves_original_inner_disk_and_extends_outer_disk(self):
+        settings = json.loads((ROOT / 'cfg/disk_material.json').read_text())
+        settings.update(resolution=[64, 128, 16], envelope_mode='legacy_outer_flare',
+                        emission_noise_power=0, extinction_noise_power=0,
+                        temperature_noise_strength=0)
+        start, end = temperature_flare_radii(np.load(ROOT / 'cache/disk_lut_for_mov_disk.npy'),
+                                            settings['height_temperature_start'], settings['height_temperature_end'])
+        with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
+            directory = Path(directory)
+            def bake(name, changes):
+                configuration = directory / (name + '.json')
+                configuration.write_text(json.dumps({**settings, **changes}))
+                output = directory / (name + '.npy')
+                subprocess.run([sys.executable, str(ROOT / 'tools/prebake_native34.py'),
+                                '--settings', str(configuration), '--output', str(output)],
+                               cwd=ROOT, capture_output=True, check=True)
+                return load_disk_cache(output, coefficients=True)
+            extended = bake('outer', {})
+            # Match physical voxel centres: both grids have dz=1/16 M.
+            original = bake('original', dict(envelope_mode='legacy', vertical_half_extent=2.5,
+                                            resolution=[64, 80, 16]))
+            radii = 4.9495 + 30.0505*(np.arange(64)+.5)/64
+            inner = extended[radii <= start, 24:104]
+            original_inner = original[radii <= start]
+            np.testing.assert_array_equal(inner[..., 1], original_inner[..., 1])
+            # Remove per-shell noise-power normalization to isolate geometry.
+            for channel in (0, 2):
+                actual = inner[..., channel].astype(np.float64)
+                expected = original_inner[..., channel].astype(np.float64)
+                actual /= np.maximum(actual.max(axis=1, keepdims=True), 1e-30)
+                expected /= np.maximum(expected.max(axis=1, keepdims=True), 1e-30)
+                np.testing.assert_allclose(actual, expected, rtol=2e-4, atol=2e-6)
+            z = ((np.arange(128)+.5)/128-.5)*8
+            tails = extended[radii >= end][:, np.abs(z) > 2.5, :, 2]
+            self.assertGreater(float(tails.max()), 0)
+            self.assertGreater(5*settings['outer_height_multiplier'], np.sqrt(27))
+
+    def test_bounded_flare_is_thin_at_isco_and_grows_before_outer_fade(self):
+        settings = json.loads((ROOT / 'cfg/disk_material.json').read_text())
+        settings.update(resolution=[64, 128, 8], envelope_mode='bounded_flare',
+                        height_inner=.1, height_outer=3.0,
+                        height_variation=0, midplane_warp=0,
+                        emission_noise_power=0, extinction_noise_power=0)
+        with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
+            directory = Path(directory)
+            configuration = directory / 'settings.json'
+            configuration.write_text(json.dumps(settings))
+            output = directory / 'disk.npy'
+            subprocess.run([sys.executable, str(ROOT / 'tools/prebake_native34.py'),
+                            '--settings', str(configuration), '--output', str(output)],
+                           cwd=ROOT, capture_output=True, check=True)
+            data = load_disk_cache(output, coefficients=True)
+            start, end = temperature_flare_radii(np.load(ROOT / 'cache/disk_lut_for_mov_disk.npy'),
+                                                  settings['height_temperature_start'], settings['height_temperature_end'])
+            settings['height_transition_start'], settings['height_transition_end'] = start, end
+            r = 4.9495 + 30.0505 * (np.arange(64) + .5) / 64
+            z = ((np.arange(128) + .5) / 128 - .5) * 2*settings["vertical_half_extent"]
+            t = np.clip((r-settings['height_transition_start'])/(settings['height_transition_end']-settings['height_transition_start']), 0, 1)
+            h = settings['height_inner'] + (settings['height_outer']-settings['height_inner']) * (
+                t*t*(3-2*t)) ** settings['height_power']
+            q = z[None, :] / h[:, None]
+            edge = np.clip((1-np.abs(q))/settings['height_edge_softness'], 0, 1)
+            expected = np.exp(-.25*q*q) * edge*edge*(3-2*edge)
+            emission = data[:, :, 0, 2].astype(np.float64)
+            # Compare the vertical profile independently of the radial physics.
+            luminous = emission[:, 64] > 0
+            self.assertGreater(np.count_nonzero(luminous), 20)
+            np.testing.assert_allclose(emission[luminous] / emission[luminous, 64, None],
+                                       expected[luminous] / expected[luminous, 64, None], rtol=2e-4, atol=2e-6)
+            outside = np.broadcast_to(np.abs(q) >= 1, data.shape[:2])
+            self.assertTrue((data[..., 0][outside] == 0).all())
+            self.assertTrue((data[..., 2][outside] == 0).all())
+            self.assertLess(2*h[0], .21)
+            self.assertGreater(2*h[r >= 26][0], np.sqrt(27))
+            np.testing.assert_array_equal(h[r <= start], settings["height_inner"])
+            self.assertEqual(disk_half_extent(output), settings["vertical_half_extent"])
+            self.assertTrue((np.diff(h) >= 0).all())
+
     def test_seed_is_reproducible_and_produces_independent_clouds(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
             directory = Path(directory)
