@@ -2,10 +2,19 @@
 
 This optional mode is implemented directly in the sampling block of `krnls/disk.cu`.
 The ordinary path and kernel argument list remain available when `DISK_LOOP` is absent.
-The mode is currently supported by `render_single.py` and `tools/preview_disk.py`,
+The mode is supported by `render_single.py`, `tools/preview_disk.py` and `render_realtime.py`,
 using independent emission/extinction coefficient caches. CPU/hybrid entry
 points reject an enabled loop instead of silently changing its appearance.
-The realtime entry point still renders the ordinary single-texture disk.
+The realtime entry point reads A's `prebaked_disk_path` and the `DISK_LOOP_*`
+settings from `cfg/offline.py`, including B's cache path and the loop period.
+Set `DISK_LOOP_PERIOD=0` to use the single-texture disk. Interactive camera
+controls remain available; the existing time step is 0.5 coordinate M per
+displayed frame, so a period of 40M spans 80 frames at a fixed camera.
+Its initial camera position, orientation, focal length, velocity and coordinate
+time also come from `cfg/offline.py`, along with the skybox, sky exposure and
+color LUT. The interactive preview stays 1600 pixels wide, matching the
+offline aspect ratio and physical sensor size to preserve the field of view.
+After initialization the camera remains under keyboard control.
 
 ## Physical clocks and the existing velocity convention
 

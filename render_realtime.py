@@ -15,28 +15,51 @@ import glfw
 from cupyx.scipy.ndimage import gaussian_filter
 import os, sys
 from helpers.zero_copy_window import ZeroCopyWindow
+from cfg import offline as cfg
 
 base_path = os.path.dirname(os.path.abspath(__file__))
-img_file_path = os.path.join(base_path, 'assets', 'starmap_random_2020_16k.exr')
+disk_a_path = os.path.join(base_path, getattr(cfg, 'prebaked_disk_path', 'cache/disk_native34_coefficients.npy'))
+disk_b_path = os.path.join(base_path, getattr(cfg, 'DISK_LOOP_TEXTURE_B', 'cache/disk_native34_b.npy'))
+loop_period = float(getattr(cfg, 'DISK_LOOP_PERIOD', 40.0))
+loop_reference_time = float(getattr(cfg, 'DISK_LOOP_REFERENCE_TIME', 20.0))
+loop_epoch = float(getattr(cfg, 'DISK_LOOP_EPOCH', 0.0))
+if not np.isfinite([loop_period, loop_reference_time, loop_epoch]).all() or loop_period < 0:
+    raise ValueError('Disk loop times must be finite and period must be nonnegative (0 disables loop)')
+disk_loop = loop_period > 0
+disk_extent = disk_half_extent(disk_a_path)
+if disk_loop and disk_half_extent(disk_b_path) != disk_extent:
+    raise ValueError('Disk loop A/B vertical domains differ; rebake both textures')
+
+img_file_path = os.path.join(base_path, cfg.skybox_path)
 img_bgr = cv2.imread(img_file_path, cv2.IMREAD_UNCHANGED)   
 
 if img_bgr is None:
     print(f"错误:无法在路径 {img_file_path} 找到背景图片!")
     exit() 
 
-img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*330.0
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*float(getattr(cfg, 'SKYBOX_SCALE', 330.0))
 img_float = cp.asarray(img_rgb.astype(np.float32))
 del img_rgb
 img_rgba = cp.zeros((*img_float.shape[:2], 4), dtype=cp.float16)
 img_rgba[:, :, :3] = img_float
 tex_handle = create_texture_array_2d(img_rgba, 4, (1, 1, 1, 1), True)
+# The texture owns its CUDA array; release staging buffers before loading A/B.
+del img_bgr, img_float, img_rgba
+cp.get_default_memory_pool().free_all_blocks()
 
 print('正在加载预烘焙吸积盘纹理...')
-prebaked_data = load_disk_cache(os.path.join(base_path, 'cache', 'disk_native34_coefficients.npy'), coefficients=True)
+prebaked_data = load_disk_cache(disk_a_path, coefficients=True)
 tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float32), 4, (0, 0, 1, 1, 1), is_half=False)
 del prebaked_data
+if disk_loop:
+    prebaked_b = load_disk_cache(disk_b_path, coefficients=True)
+    tex_prebaked_b = create_texture_array_3d(cp.asarray(prebaked_b, dtype=cp.float32),
+                                           4, (0, 0, 1, 1, 1), is_half=False)
+    del prebaked_b
+    print(f'  A/B loop ready: period={loop_period:g} M, reference={loop_reference_time:g} M, epoch={loop_epoch:g} M')
+cp.get_default_memory_pool().free_all_blocks()
 
-colorlut_file_path = os.path.join(base_path, 'cache', 'color_lut2.npy')
+colorlut_file_path = os.path.join(base_path, cfg.color_lut_path)
 lut_color = cp.load(colorlut_file_path).astype(cp.float16)
 
 lut_rgba = cp.zeros((*lut_color.shape[:2], 4), dtype=cp.float16)
@@ -50,7 +73,12 @@ with open(kernel_path, "r", encoding="utf-8") as f:
     cuda_source = f.read()
 
 include_dir = os.path.dirname(os.path.abspath(kernel_path)) 
-module = cp.RawModule(code=cuda_source, options=(f'-DDISK_HALF_EXTENT={disk_half_extent(os.path.join(base_path, "cache", "disk_native34_coefficients.npy"))}f','-use_fast_math',f'-I{os.path.join(base_path, "krnls")}','-lineinfo','-DNO_DEPTH_JITTER','-DRAND_SAMP_DISK','-DDISK_COEFFICIENTS'))
+compile_opts = [f'-DDISK_HALF_EXTENT={disk_extent}f', '-use_fast_math',
+                f'-I{os.path.join(base_path, "krnls")}', '-lineinfo',
+                '-DNO_DEPTH_JITTER', '-DRAND_SAMP_DISK', '-DDISK_COEFFICIENTS']
+if disk_loop:
+    compile_opts.append('-DDISK_LOOP')
+module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))
 trace_rays_kernel = module.get_function("blackholekernel")
 
 bloom_path = os.path.join(base_path, "krnls", "bloom.cu")
@@ -66,13 +94,17 @@ bright = bloom_module.get_function("extractBright")
 downsample2x = bloom_module.get_function("downsample2x")
 
 # 超参数与窗口初始化
-w, h = 1600,1000
+w = 1600
+h = round(w * cfg.h / cfg.w)
+# Keep the offline sensor size/FOV at the smaller interactive resolution.
+physwidth = float(cfg.w * cfg.PIXEL_PITCH)
+physheight = float(cfg.h * cfg.PIXEL_PITCH)
 
-cam_pos = np.array([52.77, -77.00, 22.12], dtype=np.float32)
+cam_pos = np.array(cfg.cam_pos_init, dtype=np.float32, copy=True)
 
 
-cam_yaw, cam_pitch, cam_roll = -11.15, -0.32, 0
-focal_length = 2.56
+cam_yaw, cam_pitch, cam_roll = float(cfg.cam_yaw), float(cfg.cam_pitch), float(cfg.cam_roll)
+focal_length = float(cfg.focal_length)
 
 move_speed = 0.05
 turn_speed = 0.01
@@ -212,20 +244,23 @@ def update_camera_vectors(yaw, pitch, roll):
 
 fwd, right, up = update_camera_vectors(cam_yaw, cam_pitch, cam_roll)
 
-t = 15.0
-vx,vy,vz=0,0,0
+t = float(cfg.start_t)
+vx, vy, vz = float(cfg.vx), float(cfg.vy), float(cfg.vz)
 # 创建高效异步的主渲染流
 render_stream = cp.cuda.Stream(non_blocking=True)
 
 while not window.should_close():
     camera_moved = False
+    fine_move = (glfw.KEY_LEFT_SHIFT in window.key_pressed or
+                 glfw.KEY_RIGHT_SHIFT in window.key_pressed)
+    current_move_speed = move_speed * (0.1 if fine_move else 1.0)
     
-    if glfw.KEY_W in window.key_pressed: cam_pos += fwd * move_speed; camera_moved = True
-    if glfw.KEY_S in window.key_pressed: cam_pos -= fwd * move_speed; camera_moved = True
-    if glfw.KEY_D in window.key_pressed: cam_pos += right * move_speed; camera_moved = True
-    if glfw.KEY_A in window.key_pressed: cam_pos -= right * move_speed; camera_moved = True
-    if glfw.KEY_UP in window.key_pressed: cam_pos += up * move_speed; camera_moved = True
-    if glfw.KEY_DOWN in window.key_pressed: cam_pos -= up * move_speed; camera_moved = True
+    if glfw.KEY_W in window.key_pressed: cam_pos += fwd * current_move_speed; camera_moved = True
+    if glfw.KEY_S in window.key_pressed: cam_pos -= fwd * current_move_speed; camera_moved = True
+    if glfw.KEY_D in window.key_pressed: cam_pos += right * current_move_speed; camera_moved = True
+    if glfw.KEY_A in window.key_pressed: cam_pos -= right * current_move_speed; camera_moved = True
+    if glfw.KEY_UP in window.key_pressed: cam_pos += up * current_move_speed; camera_moved = True
+    if glfw.KEY_DOWN in window.key_pressed: cam_pos -= up * current_move_speed; camera_moved = True
     if glfw.KEY_E in window.key_pressed: cam_yaw -= turn_speed; camera_moved = True
     if glfw.KEY_Q in window.key_pressed: cam_yaw += turn_speed; camera_moved = True
     if glfw.KEY_R in window.key_pressed: cam_pitch += turn_speed; camera_moved = True
@@ -252,19 +287,23 @@ while not window.should_close():
     # 1. 在流内全速启动渲染流水线
     with render_stream:
         # 光追写入 Surface
-        trace_rays_kernel(
-            (grid_x, grid_y), (block_x, block_y), 
-            (
-                cp.uint64(frame_inter_surf.ptr), cp.uint64(tex_handle.ptr), cp.uint64(tex_prebaked.ptr), cp.uint64(tex_handle_color.ptr), cp.float32(t),
-                cp.float32(cam_pos[0]), cp.float32(cam_pos[1]), cp.float32(cam_pos[2]),
-                cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
-                cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
-                cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
-                cp.float32(vx), cp.float32(vy), cp.float32(vz),
-                cp.int32(w), cp.int32(h),
-                cp.float32(3.2), cp.float32(2.0), cp.float32(focal_length), cp.float32(0.1), cp.int32(2000), cp.int32(jitnum), cp.int32(frames)
-            )
+        kernel_args = (
+            cp.uint64(frame_inter_surf.ptr), cp.uint64(tex_handle.ptr), cp.uint64(tex_prebaked.ptr), cp.uint64(tex_handle_color.ptr), cp.float32(t),
+            cp.float32(cam_pos[0]), cp.float32(cam_pos[1]), cp.float32(cam_pos[2]),
+            cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
+            cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
+            cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
+            cp.float32(vx), cp.float32(vy), cp.float32(vz),
+            cp.int32(w), cp.int32(h),
+            cp.float32(physwidth), cp.float32(physheight), cp.float32(focal_length), cp.float32(0.1), cp.int32(2000), cp.int32(jitnum), cp.int32(frames)
         )
+        if disk_loop:
+            # Same ABI and retarded-time turnover as the offline renderer.
+            kernel_args = kernel_args[:-1] + (
+                cp.uint64(tex_prebaked_b.ptr), cp.float32(loop_period),
+                cp.float32(loop_reference_time), cp.float32(loop_epoch),
+            ) + kernel_args[-1:]
+        trace_rays_kernel((grid_x, grid_y), (block_x, block_y), kernel_args)
         # Graph读取 Surface,处理Bloom,输出给线性 uint8 静态数组
         postprocess_graph.launch(stream=render_stream)
 

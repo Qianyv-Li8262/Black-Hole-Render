@@ -252,6 +252,8 @@ An opt-in two-texture wallpaper loop retains retarded-time sampling and bounded
 differential shear. See [disk loop physics and commands](docs/disk_loop.md).
 Bake an independent B with `tools/prebake_native34.py --seed 2718281 --output cache/disk_native34_b.npy`,
 then use `tools/preview_disk.py --disk-b cache/disk_native34_b.npy --loop-period 40 --loop-frames 120 --velocity 0 0 0`.
+`render_realtime.py` also uses the A/B loop when `DISK_LOOP_PERIOD>0` in
+`cfg/offline.py`, sharing its texture paths, period, reference time and epoch.
 The ordinary single-texture renderer remains the default.
 
 For the older thick clump preset, first generate the physics
