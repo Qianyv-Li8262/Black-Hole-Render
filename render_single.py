@@ -27,14 +27,14 @@ import os, sys, gc, json
 from cfg import offline as cfg
 from cfg.offline import *
 from helpers.render_manifest import finish_manifest, start_manifest
-from helpers.camera_motion import FreeFallCamera, camera_basis
+from helpers.camera_motion import FreeFallCamera, StaticCamera, camera_basis
 
 
 def update_after_frame(camera, frame_args, frame_idx, d_tau):
-    """Advance free fall and pack camera/time arguments for the next frame.
+    """Advance the camera worldline and pack arguments for the next frame.
 
     vx/vy/vz are initial local beta along forward/right/up. d_tau is the
-    proper-time interval; scene time follows dt/dtau along the geodesic.
+    proper-time interval; scene time follows the selected observer's dt/dtau.
     Keep trajectory changes in this function.
     """
     if not camera.advance(d_tau):
@@ -49,7 +49,20 @@ def update_after_frame(camera, frame_args, frame_idx, d_tau):
 if not np.isfinite(d_tau) or d_tau <= 0:
     raise ValueError('cfg.d_tau must be positive and finite')
 fwd, right, up = camera_basis(cam_yaw, cam_pitch, cam_roll)
-camera = FreeFallCamera(cam_pos_init, (vx, vy, vz), (fwd, right, up), start_t)
+camera_motion = getattr(cfg, 'CAMERA_MOTION', 'free_fall')
+if camera_motion not in ('free_fall', 'static'):
+    raise ValueError('CAMERA_MOTION must be free_fall or static')
+camera_class = StaticCamera if camera_motion == 'static' else FreeFallCamera
+camera = camera_class(cam_pos_init, (vx, vy, vz), (fwd, right, up), start_t)
+loop_period = float(getattr(cfg, 'DISK_LOOP_PERIOD', 0.0))
+loop_reference_time = float(getattr(cfg, 'DISK_LOOP_REFERENCE_TIME', 20.0))
+loop_epoch = float(getattr(cfg, 'DISK_LOOP_EPOCH', 0.0))
+if not np.isfinite([loop_period, loop_reference_time, loop_epoch]).all() or loop_period < 0:
+    raise ValueError('Disk loop times must be finite and period must be nonnegative (0 disables loop)')
+disk_loop = loop_period > 0
+if disk_loop and (not getattr(cfg, 'DISK_COEFFICIENTS', False) or
+                  os.path.normpath(kernel_path) != os.path.normpath('krnls/disk.cu')):
+    raise ValueError('Disk loop currently requires DISK_COEFFICIENTS=True and krnls/disk.cu')
 
 base_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -79,6 +92,16 @@ print(f"  数据 shape: {prebaked_data.shape}  dtype: {'half' if ishalf else 'fl
 del prebaked_data
 print('  吸积盘 3D 纹理就绪')
 
+if disk_loop:
+    disk_b_path = getattr(cfg, 'DISK_LOOP_TEXTURE_B', None)
+    if not disk_b_path:
+        raise ValueError('Set DISK_LOOP_TEXTURE_B to a separately baked coefficient texture')
+    prebaked_b = load_disk_cache(os.path.join(base_path, disk_b_path), coefficients=True)
+    tex_prebaked_b = create_texture_array_3d(cp.asarray(prebaked_b, dtype=cp.float32),
+                                           4, (0, 0, 1, 1, 1))
+    del prebaked_b
+    print(f'  循环云 B 就绪，周期={loop_period:g}（坐标时），参考纹理时间={loop_reference_time:g}')
+
 
 print('正在加载颜色 LUT...')
 lut_rgb = np.load(os.path.join(base_path, color_lut_path))
@@ -106,6 +129,11 @@ if getattr(cfg, 'OPACITY_CHANGE', False):
     compile_opts.append('-DOPACITY_CHANGE')
 if getattr(cfg,'DISK_COEFFICIENTS',False):
     compile_opts.append('-DDISK_COEFFICIENTS')
+if disk_loop:
+    compile_opts.append('-DDISK_LOOP')
+    # The same spatial/sample paths at every phase ensure numerical closure.
+    if '-DNO_DEPTH_JITTER' not in compile_opts:
+        compile_opts.append('-DNO_DEPTH_JITTER')
 module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))
 trace_rays_kernel = module.get_function("blackholekernel")
 
@@ -130,8 +158,12 @@ print('  Kernel 编译完成')
 output_dir = os.path.join(base_path, output_dir)
 os.makedirs(output_dir, exist_ok=True)
 manifest_path = start_manifest(output_dir, 'single_gpu', cfg,
-                               {'camera_motion': 'schwarzschild_free_fall',
+                               {'camera_motion': camera_motion,
                                 'frame_interval': 'camera_proper_time',
+                                'disk_loop': {'enabled': disk_loop, 'period': loop_period,
+                                              'reference_time': loop_reference_time, 'epoch': loop_epoch,
+                                              'clock': 'retarded_schwarzschild_coordinate_time',
+                                              'fixed_depth_sampling': disk_loop or NO_DEPTH_JITTER},
                                 'start_frame': start_frame})
 
 
@@ -209,6 +241,10 @@ kernel_args = (
     cp.int32(SSAA_COUNT),                   # jitternum
     cp.int32(1),                            # frames
 )
+if disk_loop:
+    # Insert before frames, preserving existing camera argument indices and [-1].
+    kernel_args = kernel_args[:-1] + (cp.uint64(tex_prebaked_b.ptr), cp.float32(loop_period),
+                                     cp.float32(loop_reference_time), cp.float32(loop_epoch)) + kernel_args[-1:]
 
 bright_buf = cp.zeros((h,w,4), dtype=cp.float32)
 bright_buf_tex,bright_buf_surf = create_texture_surface_union_2d(bright_buf,4,(1,1,0,1))

@@ -26,7 +26,16 @@ def main():
                         help='Scale linear HDR before the existing bloom/tone mapping; raw HDR saves stay unscaled')
     parser.add_argument('--width', type=int, default=2048, help='Preview width, preserving sensor size and aspect ratio')
     parser.add_argument('--output', default='output_frames/disk_soft_clouds_2k')
-    parser.add_argument('--save-linear', action='store_true', help='Save linear HDR pixels for convergence checks')
+    parser.add_argument('--save-linear', action='store_true', help='Save last frame linear HDR pixels for convergence checks')
+    parser.add_argument('--disk-b', help='Independent coefficient texture B for the disk loop')
+    parser.add_argument('--loop-period', type=float, help='Cloud lifetime / loop period in coordinate M units')
+    parser.add_argument('--loop-reference-time', type=float, default=20.0,
+                        help='Texture advection time at maximum visibility, not camera reception time')
+    parser.add_argument('--loop-epoch', type=float, default=0.0,
+                        help='Emission coordinate time when cloud A has maximum visibility')
+    parser.add_argument('--static-camera', action='store_true', help='Hold camera fixed; requires zero velocity')
+    parser.add_argument('--loop-frames', type=int,
+                        help='Render N equally spaced frames over one period with a static camera (no duplicate endpoint)')
     args = parser.parse_args()
     if not math.isfinite(args.step) or args.step <= 0:
         parser.error('--step must be positive and finite')
@@ -39,6 +48,14 @@ def main():
     if args.velocity is not None and (not all(math.isfinite(v) for v in args.velocity)
                                      or sum(v*v for v in args.velocity) >= 1):
         parser.error('--velocity must be finite with speed below 1')
+    if args.loop_period is not None and (not math.isfinite(args.loop_period) or args.loop_period <= 0):
+        parser.error('--loop-period must be positive and finite')
+    if not all(math.isfinite(v) for v in (args.loop_reference_time, args.loop_epoch)):
+        parser.error('Loop reference time and epoch must be finite')
+    if args.loop_frames is not None and (args.loop_frames < 2 or args.loop_period is None):
+        parser.error('--loop-frames requires --loop-period and at least 2 frames')
+    if args.loop_frames is not None and args.exposure_scale != 1:
+        parser.error('--exposure-scale currently supports single-frame previews only')
 
     root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(root))
@@ -68,6 +85,20 @@ def main():
         cfg.cam_pos_init = np.array(args.camera, dtype=np.float32)
     if args.velocity is not None:
         cfg.vx, cfg.vy, cfg.vz = args.velocity
+    if args.loop_period is not None:
+        cfg.DISK_LOOP_PERIOD = args.loop_period
+        cfg.DISK_LOOP_REFERENCE_TIME = args.loop_reference_time
+        cfg.DISK_LOOP_EPOCH = args.loop_epoch
+    if args.disk_b:
+        cfg.DISK_LOOP_TEXTURE_B = args.disk_b
+    if args.static_camera or args.loop_frames is not None:
+        cfg.CAMERA_MOTION = 'static'
+    if args.loop_frames is not None:
+        import numpy as np
+
+        u = 0.5 / np.linalg.norm(cfg.cam_pos_init)
+        cfg.total_frames = args.loop_frames
+        cfg.d_tau = args.loop_period / args.loop_frames * (1-u) / (1+u)
     for name in ('yaw', 'pitch', 'roll'):
         value = getattr(args, name)
         if value is not None:

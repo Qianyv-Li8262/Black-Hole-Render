@@ -131,3 +131,25 @@ class FreeFallCamera:
             self.proper_time += dtau
             remaining = max(0.0, remaining-dtau)
         return True
+
+
+class StaticCamera(FreeFallCamera):
+    """Supported observer at fixed coordinates; not a free-fall trajectory.
+
+    d_tau remains camera proper time, so dt/dtau=1/alpha at this radius.
+    A nonzero local velocity would contradict the fixed worldline.
+    """
+
+    def __init__(self, position, velocity, basis, start_time=0.0):
+        super().__init__(position, velocity, basis, start_time)
+        if np.any(np.asarray(velocity) != 0):
+            raise ValueError('Static camera requires vx=vy=vz=0')
+        u = 0.5 / np.linalg.norm(self.position)
+        self.coordinate_rate = (1 + u) / (1 - u)
+
+    def advance(self, d_tau):
+        if not math.isfinite(d_tau) or d_tau < 0:
+            raise ValueError('d_tau must be finite and nonnegative')
+        self._state[6] += d_tau * self.coordinate_rate
+        self.proper_time += d_tau
+        return True

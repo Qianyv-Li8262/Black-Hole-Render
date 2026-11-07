@@ -348,6 +348,8 @@ def run_full_resolution_low_ssaa_test() -> Path:
         build_native_extension()
 
     from cfg import offline as config
+    if getattr(config, 'DISK_LOOP_PERIOD', 0) > 0:
+        raise ValueError('Two-texture disk loops currently require render_single.py or tools/preview_disk.py')
 
     test_width = int(config.w)
     test_height = int(config.h)

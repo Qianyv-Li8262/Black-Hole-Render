@@ -508,6 +508,9 @@ def main() -> int:
     parser.add_argument("--cpu-cores", type=int, metavar="N", help="CPU cores assigned to the one CPU worker")
     args = parser.parse_args()
 
+    if getattr(cfg, 'DISK_LOOP_PERIOD', 0) > 0:
+        parser.error('Two-texture disk loops currently require render_single.py or tools/preview_disk.py')
+
     if args.time_step <= 0:
         parser.error("--time-step must be positive")
     if args.use_cpu and args.cpu_cores is None:

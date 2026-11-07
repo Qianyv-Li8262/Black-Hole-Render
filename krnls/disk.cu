@@ -2,6 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 #include "cuda_vec_math_utils.cuh"
 #include "radiative_transfer.h"
+#ifdef DISK_LOOP
+#ifndef DISK_COEFFICIENTS
+#error DISK_LOOP requires independent emission/extinction coefficients
+#endif
+#endif
 
 __device__ __forceinline__ float3 boost(float3 b, float3 vec, float gamma)
 {
@@ -321,7 +326,12 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                 const float right_y, const float right_z, const float up_x, const float up_y, const float up_z,
                 const float vfwd, const float vright, const float vup, const int imgwidth, const int imgheight,
                 const float physwidth, const float physheight, const float focal_length, const float step,
-                const int maxstep, const int jitternum, const int frames
+                const int maxstep, const int jitternum,
+#ifdef DISK_LOOP
+                cudaTextureObject_t prebaked_disk_b, const float loop_period,
+                const float loop_reference_time, const float loop_epoch,
+#endif
+                const int frames
 
 )
 {
@@ -337,6 +347,12 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
 
     if (pixel_idx >= imgwidth || pixel_idy >= imgheight)
         return;
+#ifdef DISK_LOOP
+    // Remove whole observer periods first for stable t versus t+T evaluation.
+    // The FULL light delay is still subtracted separately at each ray sample.
+    double loop_time = double(time) - double(loop_epoch);
+    loop_time -= floor(loop_time / double(loop_period)) * double(loop_period);
+#endif
     float4 buffer = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
     float jitterx;
@@ -544,10 +560,21 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
 
                 float td, pd;
                 tdpd(r_disk, &td, &pd);
-                float td2, pd2;
-                tdpd(7.0f, &td2, &pd2);
-                // float rot = pd * 200.0f / td + pd2 * (time - t_use) / td2;
+#ifdef DISK_LOOP
+                // All clocks use coordinate M units. Turnover AND rotation
+                // refer to this emission event, including its light delay.
+                double cycle = (loop_time - double(t_use)) / double(loop_period) + 0.5;
+                double qa = cycle - floor(cycle);
+                double qb = qa + 0.5;
+                qb -= floor(qb);
+                float ta = float(double(loop_reference_time) + double(loop_period) * (qa - 0.5));
+                float tb = float(double(loop_reference_time) + double(loop_period) * (qb - 0.5));
+                float wa = 0.5f - 0.5f * cosf(float(6.283185307179586 * qa));
+                float wb = 1.0f - wa; // zero weight AND slope hide each reset
+                float rot = pd * ta / td;
+#else
                 float rot = pd * (time - t_use) / td;
+#endif
 
                 float phi_final = atan2f(temp.y, temp.x) + rot;
                 phi_final = fast_mod2pi(phi_final);
@@ -556,6 +583,14 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                                                   phi_final * 0.15915494f,        // x → phi
                                                   (temp.z / 2.5f) / 2 + 0.5f,     // y → z
                                                   (r_disk - 4.9495f) / 30.0505f); // z → r_disk
+
+#ifdef DISK_LOOP
+                float phi_b = fast_mod2pi(atan2f(temp.y, temp.x) + pd * tb / td);
+                float4 parameters_b = tex3D<float4>(prebaked_disk_b, phi_b * 0.15915494f,
+                    (temp.z / 2.5f) / 2 + 0.5f, (r_disk - 4.9495f) / 30.0505f);
+                // Same physical bulk velocity for both pattern populations.
+                parameters.x = wa * parameters.x + wb * parameters_b.x;
+#endif
 
                 float g = fmaxf((fabsf((factor * gamma + p_init * e0) / (td - pd * lz)) - 1.0f) * 1.0f + 1.0f, 0.01f);
                 float g4 = g * g * g * g;
@@ -577,16 +612,24 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
 #endif
 #ifndef ACCRE_DISK_DOPPLER_FOLLOW_BKGD // DO NOT USE UNLESS U KNOW WHAT UR DOING
                 float4 emission = disk_emission_dep(fmaxf(parameters.y * g, 1000.0f), parameters.z * g4, lut_color);
+#ifdef DISK_LOOP
+                float4 emission_b = disk_emission_dep(fmaxf(parameters_b.y * g, 1000.0f), parameters_b.z * g4, lut_color);
+                emission = emission * wa + emission_b * wb;
+#endif
 #else
                 float4 color = tex2D<float4>(lut_color, (parameters.y - 510.0f) / 20000.0f, 0.5f);
                 // rgb_three_line_frequency_shift already includes g^3.
                 float intensity = parameters.z * g;
                 float3 rgb = make_float3(color.x, color.y, color.z);
                 float3 shifted_rgb = rgb_three_line_frequency_shift(rgb, g);
-                color.x = shifted_rgb.x;
-                color.y = shifted_rgb.y;
-                color.z = shifted_rgb.z;
-                float4 emission = make_float4(color.x * intensity, color.y * intensity, color.z * intensity, 1.0f);
+                float4 emission = make_float4(shifted_rgb.x * intensity, shifted_rgb.y * intensity, shifted_rgb.z * intensity, 1.0f);
+#ifdef DISK_LOOP
+                float4 color_b = tex2D<float4>(lut_color, (parameters_b.y - 510.0f) / 20000.0f, 0.5f);
+                float3 shifted_b = rgb_three_line_frequency_shift(make_float3(color_b.x, color_b.y, color_b.z), g);
+                float intensity_b = parameters_b.z * g;
+                float4 emission_b = make_float4(shifted_b.x * intensity_b, shifted_b.y * intensity_b, shifted_b.z * intensity_b, 1.0f);
+                emission = emission * wa + emission_b * wb;
+#endif
 #endif
 
 #if defined(OPACITY_CHANGE) && !defined(DISK_COEFFICIENTS)

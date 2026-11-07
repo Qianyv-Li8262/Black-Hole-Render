@@ -68,3 +68,11 @@ NOT_USE_S_CURVE   = False
 # 3+4+5消光 + main温度扰动；修改 cfg/disk_material.json 后重新烘焙
 DISK_COEFFICIENTS = True
 SKYBOX_SCALE = 330.0  # 原离线星空曝光33的10倍
+
+# 可选 GPU 双纹理循环；B 用 tools/prebake_native34.py --seed 2718281 单独生成。
+# 时间全部为 M=c=1 下的坐标时；reference 是纹理年龄，不是相机截图时刻。
+DISK_LOOP_PERIOD = 0.0  # 0 关闭；试验值 40，此时每层年龄在 reference±20 间变化
+DISK_LOOP_REFERENCE_TIME = 20.0
+DISK_LOOP_EPOCH = 0.0  # A 在发光时刻 epoch 达到最大权重；B 错开半周期
+DISK_LOOP_TEXTURE_B = 'cache/disk_native34_b.npy'
+CAMERA_MOTION = 'free_fall'  # 壁纸改为 static，并设置 vx=vy=vz=0
