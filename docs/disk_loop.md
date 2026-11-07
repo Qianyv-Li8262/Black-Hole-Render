@@ -2,9 +2,10 @@
 
 This optional mode is implemented directly in the sampling block of `krnls/disk.cu`.
 The ordinary path and kernel argument list remain available when `DISK_LOOP` is absent.
-The mode is supported by `render_single.py`, `tools/preview_disk.py` and `render_realtime.py`,
-using independent emission/extinction coefficient caches. CPU/hybrid entry
-points reject an enabled loop instead of silently changing its appearance.
+The mode is supported by `render_single.py`, `tools/preview_disk.py`,
+`render_realtime.py` and the GPU workers in `render_hybrid.py`, using independent
+emission/extinction coefficient caches. CPU rendering does not support the
+loop; `render_hybrid.py` rejects `--use-cpu` while a loop is enabled.
 The realtime entry point reads A's `prebaked_disk_path` and the `DISK_LOOP_*`
 settings from `cfg/offline.py`, including B's cache path and the loop period.
 Set `DISK_LOOP_PERIOD=0` to use the single-texture disk. Interactive camera
@@ -15,6 +16,21 @@ time also come from `cfg/offline.py`, along with the skybox, sky exposure and
 color LUT. The interactive preview stays 1600 pixels wide, matching the
 offline aspect ratio and physical sensor size to preserve the field of view.
 After initialization the camera remains under keyboard control.
+
+For frame-parallel multi-GPU throughput, set `DISK_LOOP_PERIOD>0` and run:
+
+```bash
+python render_hybrid.py --gpus all --time-step 0.5
+```
+
+Each GPU owns A and B and claims complete frames from the shared scheduler.
+Time is derived from the frame index, independently of GPU assignment or
+completion order: `t=start_t+(frame_idx-1)*time_step`. The camera and configured
+velocity stay fixed. `--time-step` is coordinate M per frame (defaults to
+`cfg.d_tau` in this entry point); no camera proper-time conversion is applied.
+For period 40M and 80 loop frames, use time step 0.5 and `total_frames=80`.
+The duplicate endpoint is omitted. Existing frame PNGs are skipped unless
+`--overwrite` is specified; use a new output directory when changing settings.
 
 ## Physical clocks and the existing velocity convention
 

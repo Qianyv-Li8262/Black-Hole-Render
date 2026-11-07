@@ -47,6 +47,20 @@ FAILED = np.int8(-1)
 BASE_PATH = Path(__file__).resolve().parent
 
 
+def disk_loop_settings() -> tuple[float, float, float]:
+    period = float(getattr(cfg, 'DISK_LOOP_PERIOD', 0.0))
+    reference = float(getattr(cfg, 'DISK_LOOP_REFERENCE_TIME', 20.0))
+    epoch = float(getattr(cfg, 'DISK_LOOP_EPOCH', 0.0))
+    if not np.isfinite([period, reference, epoch]).all() or period < 0:
+        raise ValueError('Disk loop times must be finite and period must be nonnegative (0 disables loop)')
+    if period > 0:
+        if not getattr(cfg, 'DISK_COEFFICIENTS', False) or Path(cfg.kernel_path) != Path('krnls/disk.cu'):
+            raise ValueError('Disk loop requires DISK_COEFFICIENTS=True and krnls/disk.cu')
+        if not getattr(cfg, 'DISK_LOOP_TEXTURE_B', None):
+            raise ValueError('Set DISK_LOOP_TEXTURE_B to an independently baked coefficient texture')
+    return period, reference, epoch
+
+
 class FrameScheduler:
     """Thread-safe, lowest-frame-first scheduler shared by GPU workers."""
 
@@ -128,6 +142,11 @@ class GpuRenderer:
             self._initialize()
 
     def _initialize(self) -> None:
+        self.loop_period, self.loop_reference_time, self.loop_epoch = disk_loop_settings()
+        self.disk_loop = self.loop_period > 0
+        self.disk_extent = disk_half_extent(BASE_PATH / cfg.prebaked_disk_path)
+        if self.disk_loop and disk_half_extent(BASE_PATH / cfg.DISK_LOOP_TEXTURE_B) != self.disk_extent:
+            raise ValueError('Disk loop A/B vertical domains differ; rebake both textures')
         self.w, self.h = cfg.w, cfg.h
         self.block_x, self.block_y = cfg.block_x, cfg.block_y
         self.grid_x = (self.w + self.block_x - 1) // self.block_x
@@ -150,6 +169,12 @@ class GpuRenderer:
             cp.asarray(prebaked_data, dtype=cp.float32 if getattr(cfg,"DISK_COEFFICIENTS",False) else cp.float16), 4, (0, 0, 1, 1, 1), not getattr(cfg,"DISK_COEFFICIENTS",False)
         )
         del prebaked_data
+        if self.disk_loop:
+            print(f"[GPU {self.gpu_id}] Loading independent disk texture B...")
+            prebaked_b = load_disk_cache(BASE_PATH / cfg.DISK_LOOP_TEXTURE_B, coefficients=True)
+            self.disk_b_tex = create_texture_array_3d(cp.asarray(prebaked_b, dtype=cp.float32),
+                                                     4, (0, 0, 1, 1, 1))
+            del prebaked_b
 
         lut_rgb = np.load(BASE_PATH / cfg.color_lut_path)
         lut_rgba = np.ones((*lut_rgb.shape[:-1], 4), dtype=lut_rgb.dtype)
@@ -165,10 +190,10 @@ class GpuRenderer:
 
     def _compile_kernels(self) -> None:
         kernel_file = BASE_PATH / cfg.kernel_path
-        compile_opts = [f"-DDISK_HALF_EXTENT={disk_half_extent(BASE_PATH / cfg.prebaked_disk_path)}f", "-use_fast_math", f"-I{BASE_PATH / 'krnls'}", "-lineinfo"]
+        compile_opts = [f"-DDISK_HALF_EXTENT={self.disk_extent}f", "-use_fast_math", f"-I{BASE_PATH / 'krnls'}", "-lineinfo"]
         if cfg.USE_RK4:
             compile_opts.append("-DUSE_RK4")
-        if cfg.NO_DEPTH_JITTER:
+        if cfg.NO_DEPTH_JITTER or self.disk_loop:
             compile_opts.append("-DNO_DEPTH_JITTER")
         if cfg.RAND_SAMP_DISK:
             compile_opts.append("-DRAND_SAMP_DISK")
@@ -180,6 +205,8 @@ class GpuRenderer:
         trace_source = kernel_file.read_text(encoding="utf-8")
         if getattr(cfg,"DISK_COEFFICIENTS",False):
             compile_opts.append("-DDISK_COEFFICIENTS")
+        if self.disk_loop:
+            compile_opts.append('-DDISK_LOOP')
         trace_module = cp.RawModule(code=trace_source, options=tuple(compile_opts))
         self.trace_rays_kernel = trace_module.get_function("blackholekernel")
 
@@ -253,6 +280,11 @@ class GpuRenderer:
             cp.float32(cfg.focal_length), cp.float32(cfg.step), cp.int32(cfg.maxstep),
             cp.int32(cfg.SSAA_COUNT), cp.int32(1),
         )
+        if self.disk_loop:
+            self.static_kernel_args = self.static_kernel_args[:-1] + (
+                cp.uint64(self.disk_b_tex.ptr), cp.float32(self.loop_period),
+                cp.float32(self.loop_reference_time), cp.float32(self.loop_epoch),
+            ) + self.static_kernel_args[-1:]
         self.render_stream = cp.cuda.Stream(non_blocking=True)
 
     @staticmethod
@@ -509,10 +541,14 @@ def main() -> int:
     parser.add_argument("--cpu-cores", type=int, metavar="N", help="CPU cores assigned to the one CPU worker")
     args = parser.parse_args()
 
-    if getattr(cfg, 'DISK_LOOP_PERIOD', 0) > 0:
-        parser.error('Two-texture disk loops currently require render_single.py or tools/preview_disk.py')
+    try:
+        loop_period, loop_reference_time, loop_epoch = disk_loop_settings()
+    except ValueError as error:
+        parser.error(str(error))
+    if loop_period > 0 and args.use_cpu:
+        parser.error('A/B disk loops support GPU workers only; omit --use-cpu')
 
-    if args.time_step <= 0:
+    if not np.isfinite(args.time_step) or args.time_step <= 0:
         parser.error("--time-step must be positive")
     if args.use_cpu and args.cpu_cores is None:
         parser.error("--use-cpu requires --cpu-cores N")
@@ -542,6 +578,12 @@ def main() -> int:
             "arguments": vars(args),
             "gpu_ids": gpu_ids,
             "cpu_accelerator_cores": args.cpu_cores if args.use_cpu else 0,
+            "camera_motion": "fixed",
+            "frame_interval": "schwarzschild_coordinate_time",
+            "disk_loop": {"enabled": loop_period > 0, "period": loop_period,
+                          "reference_time": loop_reference_time, "epoch": loop_epoch,
+                          "clock": "retarded_schwarzschild_coordinate_time",
+                          "fixed_depth_sampling": loop_period > 0 or cfg.NO_DEPTH_JITTER},
         },
     )
     cpu_description = f"; CPU worker={args.cpu_cores} cores" if args.use_cpu else ""

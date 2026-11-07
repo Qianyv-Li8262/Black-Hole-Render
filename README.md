@@ -88,6 +88,9 @@ python render_single.py
 # Frame-parallel renderer using all GPUs
 python render_hybrid.py --gpus all
 
+# A/B loop on all GPUs: enable DISK_LOOP_PERIOD in cfg/offline.py
+python render_hybrid.py --gpus all --time-step 0.5
+
 # Add a CPU accelerator to the GPU workers
 python render_hybrid.py --gpus all --use-cpu --cpu-cores 112
 
