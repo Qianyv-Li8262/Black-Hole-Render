@@ -79,10 +79,10 @@ else:
 
 
 print('正在加载天空盒...')
-img_bgr = read_skybox_bgr(os.path.join(base_path, skybox_path))
+skybox_file_path = os.path.join(base_path, skybox_path)
+img_bgr = read_skybox_bgr(skybox_file_path)
 if img_bgr is None:
-    print(f"错误:无法加载天空盒!")
-    exit()
+    raise SystemExit(f'错误：无法加载天空盒 {skybox_file_path}')
 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)*getattr(cfg, 'SKYBOX_SCALE', 330.0)
 del img_bgr
 img_float = cp.asarray(img_rgb.astype(np.float16))
@@ -166,14 +166,6 @@ print('  Kernel 编译完成')
 
 output_dir = os.path.join(base_path, output_dir)
 os.makedirs(output_dir, exist_ok=True)
-manifest_path = start_manifest(output_dir, 'single_gpu', cfg,
-                               {'camera_motion': camera_motion,
-                                'frame_interval': 'camera_proper_time',
-                                'disk_loop': {'enabled': disk_loop, 'period': loop_period,
-                                              'reference_time': loop_reference_time, 'epoch': loop_epoch,
-                                              'clock': 'retarded_schwarzschild_coordinate_time',
-                                              'fixed_depth_sampling': disk_loop or NO_DEPTH_JITTER},
-                                'start_frame': start_frame})
 
 
 
@@ -326,53 +318,72 @@ render_stream = cp.cuda.Stream(non_blocking=True)
 kernel_args_dynamic = list(kernel_args)
 camera_frames = []
 frames_rendered = 0
-for render_idx in range(1, total_frames + 1):
-    frame_idx = start_frame + render_idx - 1
-    start_time = time.time()
-    cp.cuda.profiler.start()
-    with render_stream:
-        # 1. 核心光追
-        trace_rays_kernel((grid_x, grid_y), (block_x, block_y), tuple(kernel_args_dynamic))
-        # 2. 紧接着执行后处理 (GPU 会自动等光追画完再处理 Graph,绝不抢跑)
-        postprocess_graph.launch(stream=render_stream)
-        # debug((grid_x, grid_y), (block_x, block_y),(current_frame_float,w,h,frame_inter_tex.ptr))
+manifest_path = start_manifest(output_dir, 'single_gpu', cfg,
+                               {'camera_motion': camera_motion,
+                                'frame_interval': 'camera_proper_time',
+                                'disk_loop': {'enabled': disk_loop, 'period': loop_period,
+                                              'reference_time': loop_reference_time, 'epoch': loop_epoch,
+                                              'clock': 'retarded_schwarzschild_coordinate_time',
+                                              'fixed_depth_sampling': disk_loop or NO_DEPTH_JITTER},
+                                'start_frame': start_frame})
+try:
+    for render_idx in range(1, total_frames + 1):
+        frame_idx = start_frame + render_idx - 1
+        start_time = time.time()
+        cp.cuda.profiler.start()
+        with render_stream:
+            # 1. 核心光追
+            trace_rays_kernel((grid_x, grid_y), (block_x, block_y), tuple(kernel_args_dynamic))
+            # 2. 紧接着执行后处理 (GPU 会自动等光追画完再处理 Graph,绝不抢跑)
+            postprocess_graph.launch(stream=render_stream)
+            # debug((grid_x, grid_y), (block_x, block_y),(current_frame_float,w,h,frame_inter_tex.ptr))
 
-    # ====== 【修复点 3】必须同步!让 CPU 停下来等 GPU 把所有活干完再截图 ======
-    cp.cuda.profiler.stop()
-    render_stream.synchronize()
+        # ====== 【修复点 3】必须同步!让 CPU 停下来等 GPU 把所有活干完再截图 ======
+        cp.cuda.profiler.stop()
+        render_stream.synchronize()
 
-    img_rgba_cp = current_frame_float.reshape((h, w, 4))
-    img_rgba_np = cp.asnumpy(img_rgba_cp)
-    img_bgr_np = cv2.cvtColor(img_rgba_np, cv2.COLOR_RGBA2BGR)
-    # img_bgr_np[502:612,512:522,0]=255
-    # img_bgr_np[602,512,1]=0
-    # img_bgr_np[602,512,2]=255
-    output_path = os.path.join(output_dir, f"frame_{frame_idx:05d}.png")
-    if not cv2.imwrite(output_path, img_bgr_np):
-        raise OSError(f'Could not save frame: {output_path}')
-    frames_rendered += 1
-    camera_frames.append({'frame': frame_idx, 'proper_time': camera.proper_time,
-                          'time': camera.time, 'position': camera.position.tolist(),
-                          'velocity': camera.velocity.tolist()})
+        img_rgba_cp = current_frame_float.reshape((h, w, 4))
+        img_rgba_np = cp.asnumpy(img_rgba_cp)
+        img_bgr_np = cv2.cvtColor(img_rgba_np, cv2.COLOR_RGBA2BGR)
+        # img_bgr_np[502:612,512:522,0]=255
+        # img_bgr_np[602,512,1]=0
+        # img_bgr_np[602,512,2]=255
+        output_path = os.path.join(output_dir, f"frame_{frame_idx:05d}.png")
+        if not cv2.imwrite(output_path, img_bgr_np):
+            raise OSError(f'Could not save frame: {output_path}')
+        frames_rendered += 1
+        camera_frames.append({'frame': frame_idx, 'proper_time': camera.proper_time,
+                              'time': camera.time, 'position': camera.position.tolist(),
+                              'velocity': camera.velocity.tolist()})
 
-    elapsed = time.time() - start_time
-
-
-    print(f"[Frame {frame_idx:05d} | {render_idx}/{total_frames}] {elapsed:.3f} s | "
-          f"t={camera.time:.4f} tau={camera.proper_time:.4f} "
-          f"r={np.linalg.norm(camera.position):.4f} "
-          f"beta={np.linalg.norm(camera.velocity):.6f}")
-    if render_idx < total_frames and not update_after_frame(camera, kernel_args_dynamic, render_idx, d_tau):
-        print('相机已接近视界（r=0.55），停止后续帧渲染。')
-        break
+        elapsed = time.time() - start_time
 
 
-    gc.collect()
+        print(f"[Frame {frame_idx:05d} | {render_idx}/{total_frames}] {elapsed:.3f} s | "
+              f"t={camera.time:.4f} tau={camera.proper_time:.4f} "
+              f"r={np.linalg.norm(camera.position):.4f} "
+              f"beta={np.linalg.norm(camera.velocity):.6f}")
+        if render_idx < total_frames and not update_after_frame(camera, kernel_args_dynamic, render_idx, d_tau):
+            print('相机已接近视界（r=0.55），停止后续帧渲染。')
+            break
+
+
+        gc.collect()
+
+    trajectory_path = manifest_path.with_name(manifest_path.stem + '_camera.json')
+    with open(trajectory_path, 'w', encoding='utf-8') as f:
+        json.dump(camera_frames, f, ensure_ascii=False, indent=2)
+    finish_manifest(manifest_path, 'complete', {'frames_rendered': frames_rendered,
+                    'last_frame': start_frame + frames_rendered - 1 if frames_rendered else None,
+                    'stopped_near_horizon': camera.stopped, 'camera_trajectory': trajectory_path.name})
+except (Exception, KeyboardInterrupt) as error:
+    try:
+        finish_manifest(manifest_path, 'failed', {
+            'frames_rendered': frames_rendered,
+            'error': str(error) or type(error).__name__,
+        })
+    except (OSError, ValueError) as manifest_error:
+        print(f'警告：无法更新渲染记录 {manifest_path}：{manifest_error}', file=sys.stderr)
+    raise
 
 print("\n渲染完毕!")
-trajectory_path = manifest_path.with_name(manifest_path.stem + '_camera.json')
-with open(trajectory_path, 'w', encoding='utf-8') as f:
-    json.dump(camera_frames, f, ensure_ascii=False, indent=2)
-finish_manifest(manifest_path, 'complete', {'frames_rendered': frames_rendered,
-                'last_frame': start_frame + frames_rendered - 1 if frames_rendered else None,
-                'stopped_near_horizon': camera.stopped, 'camera_trajectory': trajectory_path.name})

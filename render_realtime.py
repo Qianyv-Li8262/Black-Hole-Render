@@ -41,8 +41,7 @@ img_file_path = os.path.join(base_path, cfg.skybox_path)
 img_bgr = read_skybox_bgr(img_file_path)
 
 if img_bgr is None:
-    print(f"错误:无法在路径 {img_file_path} 找到背景图片!")
-    exit() 
+    raise SystemExit(f'错误：无法加载天空盒 {img_file_path}')
 
 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)*float(getattr(cfg, 'SKYBOX_SCALE', 330.0))
 img_float = cp.asarray(img_rgb.astype(np.float32))
