@@ -6,9 +6,11 @@ The mode is supported by `render_single.py`, `tools/preview_disk.py`,
 `render_realtime.py` and the GPU workers in `render_hybrid.py`, using independent
 emission/extinction coefficient caches. CPU rendering does not support the
 loop; `render_hybrid.py` rejects `--use-cpu` while a loop is enabled.
-The realtime entry point reads A's `prebaked_disk_path` and the `DISK_LOOP_*`
-settings from `cfg/offline.py`, including B's cache path and the loop period.
-Set `DISK_LOOP_PERIOD=0` to use the single-texture disk. Interactive camera
+The disk renderers and preview tool read `DISK_LOOP_PERIOD` from `cfg/offline.py`.
+Set it explicitly to `0.0` for single-texture rendering or a positive value for
+a loop. A and B must use matching baked settings, vertical bounds, physics LUT
+and core profile, with different noise seeds. Keep both JSON sidecars with
+their textures. Interactive camera
 controls remain available; the existing time step is 0.5 coordinate M per
 displayed frame, so a period of 40M spans 80 frames at a fixed camera.
 Its initial camera position, orientation, focal length, velocity and coordinate
@@ -125,21 +127,29 @@ it represents an observer held at fixed coordinates, not free fall.
 
 ## Try it
 
-Keep the existing A cache. Bake B with the same material settings and a new seed:
+Keep the existing A cache. Set the period and B's path in `cfg/offline.py`.
+
+```python
+DISK_LOOP_PERIOD = 40.0
+DISK_LOOP_REFERENCE_TIME = 20.0
+DISK_LOOP_EPOCH = 0.0
+DISK_LOOP_TEXTURE_B = 'cache/disk_native34_b.npy'
+```
+
+Bake B with the same material settings and a new seed, then render the preview.
 
 ```powershell
 python tools/prebake_native34.py --seed 2718281 --output cache/disk_native34_b.npy
-python tools/preview_disk.py --disk-b cache/disk_native34_b.npy --loop-period 40 --loop-reference-time 20 --loop-epoch 0 --loop-frames 120 --velocity 0 0 0 --width 1024 --jitter 8 --step 0.02 --output output_frames/disk_loop_demo
+python tools/preview_disk.py --loop-frames 120 --velocity 0 0 0 --width 1024 --jitter 8 --step 0.02 --output output_frames/disk_loop_demo
 ffmpeg -framerate 30 -i output_frames/disk_loop_demo/frame_%05d.png -c:v libx264 -pix_fmt yuv420p output_frames/disk_loop_demo.mp4
 ```
 
 This yields a 4-second preview of a coordinate-time period of 40 M.
 `--time` chooses the observer start time, not the emission epoch.
 `--save-linear` saves the LAST frame's HDR array; exposure overrides support
-single-frame previews only. By default the new mode is disabled, leaving the
-ordinary config and A cache untouched. `cfg/offline_example.py` lists the
-equivalent configuration fields for longer offline runs. Current full-size
-A and B caches each contain 1 GiB of float32 coefficients.
+single-frame previews only. `cfg/offline_example.py` lists the same configuration
+fields for longer offline runs. Current full-size A and B caches each contain
+1 GiB of float32 coefficients.
 
 ## Validation
 

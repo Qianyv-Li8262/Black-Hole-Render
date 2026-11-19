@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 import numpy as np
-from helpers.disk_cache import load_disk_cache, disk_half_extent
+from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 from tools.prebake_native34 import temperature_flare_radii
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +46,40 @@ class CacheFormatTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'disagree'):
                 load_disk_cache(path, coefficients=False)
             self.assertEqual(load_disk_cache(path, coefficients=True).dtype, np.float32)
+
+    def test_disk_loop_pair_checks_material_inputs_and_independent_seeds(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
+            a, b = (Path(directory) / name for name in ('a.npy', 'b.npy'))
+            settings = {'resolution': [64, 128, 16], 'temperature_noise_strength': .67}
+            metadata = dict(format='native34-coefficients-v1', settings=settings,
+                            physics_lut_sha256='test-physics', core_profile_sha256='test-core',
+                            vertical_half_extent=4., noise_seed=1)
+            a.with_suffix('.json').write_text(json.dumps(metadata))
+
+            def write_b(**overrides):
+                b.with_suffix('.json').write_text(json.dumps({**metadata, 'noise_seed': 2, **overrides}))
+
+            with self.assertRaisesRegex(ValueError, r'b\.npy.*coefficient metadata'):
+                validate_disk_loop_pair(a, b)
+            write_b(settings_sha256='different-serialization')
+            self.assertEqual(validate_disk_loop_pair(a, b), 4.)
+
+            for field, value in dict(settings={**settings, 'temperature_noise_strength': 0.},
+                                     physics_lut_sha256='other-physics', core_profile_sha256='other-core',
+                                     vertical_half_extent=2.5, noise_seed=1).items():
+                with self.subTest(field=field):
+                    write_b(**{field: value})
+                    with self.assertRaisesRegex(ValueError, field):
+                        validate_disk_loop_pair(a, b)
+
+            for field in ('settings', 'physics_lut_sha256', 'core_profile_sha256',
+                          'vertical_half_extent', 'noise_seed'):
+                with self.subTest(missing=field):
+                    partial = {**metadata, 'noise_seed': 2}
+                    del partial[field]
+                    b.with_suffix('.json').write_text(json.dumps(partial))
+                    with self.assertRaisesRegex(ValueError, rf'b\.npy.*{field}'):
+                        validate_disk_loop_pair(a, b)
 
 
 @unittest.skipUnless(GPU_AVAILABLE, 'CuPy and a CUDA GPU are required')

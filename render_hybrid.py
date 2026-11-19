@@ -20,7 +20,7 @@ import traceback
 
 import cv2
 import numpy as np
-from helpers.disk_cache import load_disk_cache, disk_half_extent
+from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 
 try:
     import cupy as cp
@@ -48,7 +48,7 @@ BASE_PATH = Path(__file__).resolve().parent
 
 
 def disk_loop_settings() -> tuple[float, float, float]:
-    period = float(getattr(cfg, 'DISK_LOOP_PERIOD', 0.0))
+    period = float(cfg.DISK_LOOP_PERIOD)
     reference = float(getattr(cfg, 'DISK_LOOP_REFERENCE_TIME', 20.0))
     epoch = float(getattr(cfg, 'DISK_LOOP_EPOCH', 0.0))
     if not np.isfinite([period, reference, epoch]).all() or period < 0:
@@ -144,9 +144,12 @@ class GpuRenderer:
     def _initialize(self) -> None:
         self.loop_period, self.loop_reference_time, self.loop_epoch = disk_loop_settings()
         self.disk_loop = self.loop_period > 0
-        self.disk_extent = disk_half_extent(BASE_PATH / cfg.prebaked_disk_path)
-        if self.disk_loop and disk_half_extent(BASE_PATH / cfg.DISK_LOOP_TEXTURE_B) != self.disk_extent:
-            raise ValueError('Disk loop A/B vertical domains differ; rebake both textures')
+        disk_a_path = BASE_PATH / cfg.prebaked_disk_path
+        if self.disk_loop:
+            disk_b_path = BASE_PATH / cfg.DISK_LOOP_TEXTURE_B
+            self.disk_extent = validate_disk_loop_pair(disk_a_path, disk_b_path)
+        else:
+            self.disk_extent = disk_half_extent(disk_a_path)
         self.w, self.h = cfg.w, cfg.h
         self.block_x, self.block_y = cfg.block_x, cfg.block_y
         self.grid_x = (self.w + self.block_x - 1) // self.block_x
@@ -164,14 +167,14 @@ class GpuRenderer:
         del skybox_gpu
 
         print(f"[GPU {self.gpu_id}] Loading disk texture and colour LUT...")
-        prebaked_data = load_disk_cache(BASE_PATH / cfg.prebaked_disk_path, getattr(cfg,"DISK_COEFFICIENTS",False))
+        prebaked_data = load_disk_cache(disk_a_path, getattr(cfg,"DISK_COEFFICIENTS",False))
         self.disk_tex = create_texture_array_3d(
             cp.asarray(prebaked_data, dtype=cp.float32 if getattr(cfg,"DISK_COEFFICIENTS",False) else cp.float16), 4, (0, 0, 1, 1, 1), not getattr(cfg,"DISK_COEFFICIENTS",False)
         )
         del prebaked_data
         if self.disk_loop:
             print(f"[GPU {self.gpu_id}] Loading independent disk texture B...")
-            prebaked_b = load_disk_cache(BASE_PATH / cfg.DISK_LOOP_TEXTURE_B, coefficients=True)
+            prebaked_b = load_disk_cache(disk_b_path, coefficients=True)
             self.disk_b_tex = create_texture_array_3d(cp.asarray(prebaked_b, dtype=cp.float32),
                                                      4, (0, 0, 1, 1, 1))
             del prebaked_b
@@ -311,7 +314,7 @@ class GpuRenderer:
         return forward, right, up
 
     def _record_postprocess_graph(self) -> None:
-        threshold = np.float32(7)
+        threshold = np.float32(getattr(cfg, "BLOOM_THRESHOLD", 7.0))
         capture_stream = cp.cuda.Stream(non_blocking=True)
         with capture_stream:
             capture_stream.begin_capture()
@@ -432,7 +435,7 @@ class CpuRenderer:
             self.flags |= self.cpu.RenderFlag.DISK_DOPPLER_FOLLOW_BACKGROUND
 
         self.postprocess = self.cpu.PostprocessParams(
-            bloom_threshold=7.0,
+            bloom_threshold=float(getattr(cfg, "BLOOM_THRESHOLD", 7.0)),
             use_aces=cfg.USE_ACES,
             not_use_s_curve=cfg.NOT_USE_S_CURVE,
         )

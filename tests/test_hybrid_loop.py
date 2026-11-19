@@ -74,13 +74,15 @@ class HybridLoopTests(unittest.TestCase):
         lut = self.output / 'color.npy'
         np.save(lut, np.ones((2, 16, 3), np.float32))
         paths = []
-        for name, emission in [('a', .04), ('b', .14)]:
+        for seed, (name, emission) in enumerate([('a', .04), ('b', .14)]):
             path = self.output / (name+'.npy')
             texture = np.empty((8, 16, 32, 4), np.float32)
             texture[...] = (.02, 4500., emission, 0.)
             np.save(path, texture)
             path.with_suffix('.json').write_text(json.dumps(
-                dict(format='native34-coefficients-v1', vertical_half_extent=3.5)))
+                dict(format='native34-coefficients-v1', vertical_half_extent=3.5,
+                     settings={'resolution': [8, 16, 32]}, noise_seed=seed,
+                     physics_lut_sha256='test-physics', core_profile_sha256='test-core')))
             paths.append(str(path))
         settings = dict(w=16, h=16, block_x=8, block_y=8, skybox_path=str(sky),
                         SKYBOX_SCALE=1., prebaked_disk_path=paths[0], DISK_LOOP_TEXTURE_B=paths[1],

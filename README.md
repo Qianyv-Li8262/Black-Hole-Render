@@ -103,6 +103,8 @@ python render_realtime.py
 
 Offline runs write a timestamped `run_*.json` beside their frames so camera,
 sampling, input paths, devices, and timing are not lost.
+Set `BLOOM_THRESHOLD` in `cfg/offline.py` to share a threshold across disk
+renderers. The default is `7.0`.
 
 `render_single.py` starts the camera at `cam_pos_init` with initial local
 velocity `(vx, vy, vz)` along camera forward/right/up, in units of c.
@@ -254,10 +256,10 @@ and comparisons are under `output_frames/disk_multiscale_experiment/`.
 An opt-in two-texture wallpaper loop retains retarded-time sampling and bounded
 differential shear. See [disk loop physics and commands](docs/disk_loop.md).
 Bake an independent B with `tools/prebake_native34.py --seed 2718281 --output cache/disk_native34_b.npy`,
-then use `tools/preview_disk.py --disk-b cache/disk_native34_b.npy --loop-period 40 --loop-frames 120 --velocity 0 0 0`.
-`render_realtime.py` also uses the A/B loop when `DISK_LOOP_PERIOD>0` in
-`cfg/offline.py`, sharing its texture paths, period, reference time and epoch.
-The ordinary single-texture renderer remains the default.
+then set `DISK_LOOP_PERIOD = 40.0` and `DISK_LOOP_TEXTURE_B` in `cfg/offline.py`
+and run `python tools/preview_disk.py --loop-frames 120 --velocity 0 0 0`.
+The realtime and offline disk renderers read the period from `cfg/offline.py`.
+Set `DISK_LOOP_PERIOD = 0.0` explicitly for single-texture rendering.
 
 For the older thick clump preset, first generate the physics
 LUT with `python tools/generate_lut_physics.py`, then run

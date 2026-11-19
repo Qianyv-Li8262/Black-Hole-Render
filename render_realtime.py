@@ -10,25 +10,31 @@ import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
-from helpers.disk_cache import load_disk_cache, disk_half_extent
+from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 import glfw
-from cupyx.scipy.ndimage import gaussian_filter
 import os, sys
 from helpers.zero_copy_window import ZeroCopyWindow
 from cfg import offline as cfg
 
 base_path = os.path.dirname(os.path.abspath(__file__))
-disk_a_path = os.path.join(base_path, getattr(cfg, 'prebaked_disk_path', 'cache/disk_native34_coefficients.npy'))
-disk_b_path = os.path.join(base_path, getattr(cfg, 'DISK_LOOP_TEXTURE_B', 'cache/disk_native34_b.npy'))
-loop_period = float(getattr(cfg, 'DISK_LOOP_PERIOD', 40.0))
+disk_a_path = os.path.join(base_path, cfg.prebaked_disk_path)
+loop_period = float(cfg.DISK_LOOP_PERIOD)
 loop_reference_time = float(getattr(cfg, 'DISK_LOOP_REFERENCE_TIME', 20.0))
 loop_epoch = float(getattr(cfg, 'DISK_LOOP_EPOCH', 0.0))
 if not np.isfinite([loop_period, loop_reference_time, loop_epoch]).all() or loop_period < 0:
     raise ValueError('Disk loop times must be finite and period must be nonnegative (0 disables loop)')
 disk_loop = loop_period > 0
-disk_extent = disk_half_extent(disk_a_path)
-if disk_loop and disk_half_extent(disk_b_path) != disk_extent:
-    raise ValueError('Disk loop A/B vertical domains differ; rebake both textures')
+disk_coefficients = bool(getattr(cfg, 'DISK_COEFFICIENTS', False))
+if disk_loop:
+    if not disk_coefficients:
+        raise ValueError('Disk loop requires DISK_COEFFICIENTS=True')
+    disk_b_config = getattr(cfg, 'DISK_LOOP_TEXTURE_B', None)
+    if not disk_b_config:
+        raise ValueError('Set DISK_LOOP_TEXTURE_B to a separately baked coefficient texture')
+    disk_b_path = os.path.join(base_path, disk_b_config)
+    disk_extent = validate_disk_loop_pair(disk_a_path, disk_b_path)
+else:
+    disk_extent = disk_half_extent(disk_a_path)
 
 img_file_path = os.path.join(base_path, cfg.skybox_path)
 img_bgr = cv2.imread(img_file_path, cv2.IMREAD_UNCHANGED)   
@@ -48,8 +54,10 @@ del img_bgr, img_float, img_rgba
 cp.get_default_memory_pool().free_all_blocks()
 
 print('正在加载预烘焙吸积盘纹理...')
-prebaked_data = load_disk_cache(disk_a_path, coefficients=True)
-tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float32), 4, (0, 0, 1, 1, 1), is_half=False)
+prebaked_data = load_disk_cache(disk_a_path, coefficients=disk_coefficients)
+disk_dtype = cp.float32 if disk_coefficients else cp.float16
+tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=disk_dtype),
+                                       4, (0, 0, 1, 1, 1), is_half=not disk_coefficients)
 del prebaked_data
 if disk_loop:
     prebaked_b = load_disk_cache(disk_b_path, coefficients=True)
@@ -75,7 +83,11 @@ with open(kernel_path, "r", encoding="utf-8") as f:
 include_dir = os.path.dirname(os.path.abspath(kernel_path)) 
 compile_opts = [f'-DDISK_HALF_EXTENT={disk_extent}f', '-use_fast_math',
                 f'-I{os.path.join(base_path, "krnls")}', '-lineinfo',
-                '-DNO_DEPTH_JITTER', '-DRAND_SAMP_DISK', '-DDISK_COEFFICIENTS']
+                '-DNO_DEPTH_JITTER', '-DRAND_SAMP_DISK']
+if disk_coefficients:
+    compile_opts.append('-DDISK_COEFFICIENTS')
+if getattr(cfg, 'OPACITY_CHANGE', False):
+    compile_opts.append('-DOPACITY_CHANGE')
 if getattr(cfg, 'PHOTON_RING_OPT', False):
     compile_opts.append('-DPHOTON_RING_OPT')
 if getattr(cfg, 'ACCRE_DISK_DOPPLER_FOLLOW_BKGD', False):
@@ -157,10 +169,7 @@ for i in range(num_levels):
 tex_ptrs = [tex.ptr for tex in down_texs]
 tex_group = cp.array(tex_ptrs, dtype=cp.uint64)
 
-bloom_threshold = np.float32(1.7)
-bloom_radius = np.int32(20)
-bloom_sigma = np.float32(8.0)
-bloom_strength = np.float32(1.5)
+bloom_threshold = np.float32(getattr(cfg, 'BLOOM_THRESHOLD', 7.0))
 
 block_x, block_y = 32, 8
 grid_x = (w + block_x - 1) // block_x

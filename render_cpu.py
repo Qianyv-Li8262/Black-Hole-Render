@@ -348,12 +348,14 @@ def run_full_resolution_low_ssaa_test() -> Path:
         import cv2
     except ModuleNotFoundError as error:
         raise RuntimeError("The CPU image test needs opencv-python (`pip install opencv-python`).") from error
+    from cfg import offline as config
+    loop_period = float(config.DISK_LOOP_PERIOD)
+    if not np.isfinite(loop_period) or loop_period < 0:
+        raise ValueError('DISK_LOOP_PERIOD must be finite and nonnegative')
+    if loop_period > 0:
+        raise ValueError('Two-texture disk loops require a GPU renderer. Set DISK_LOOP_PERIOD=0 for CPU rendering.')
     if not native_extension_exists():
         build_native_extension()
-
-    from cfg import offline as config
-    if getattr(config, 'DISK_LOOP_PERIOD', 0) > 0:
-        raise ValueError('Two-texture disk loops currently require render_single.py or tools/preview_disk.py')
 
     test_width = int(config.w)
     test_height = int(config.h)
@@ -399,7 +401,7 @@ def run_full_resolution_low_ssaa_test() -> Path:
 
     started = time.perf_counter()
     postprocess = PostprocessParams(
-        bloom_threshold=12.0,
+        bloom_threshold=float(getattr(config, "BLOOM_THRESHOLD", 7.0)),
         use_aces=bool(getattr(config, "USE_ACES", False)),
         not_use_s_curve=bool(getattr(config, "NOT_USE_S_CURVE", False)),
     )
@@ -443,10 +445,6 @@ def run_full_resolution_low_ssaa_test() -> Path:
         f"{elapsed_seconds:.3f}s, workers={CPU_TEST_WORKERS}; saved to {image_path}"
     )
     return image_path
-
-
-# Compatibility name for callers that used the old test entry point.
-run_configured_test = run_full_resolution_low_ssaa_test
 
 
 if __name__ == "__main__":

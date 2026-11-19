@@ -22,7 +22,7 @@ import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
-from helpers.disk_cache import load_disk_cache, disk_half_extent
+from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 import os, sys, gc, json
 from cfg import offline as cfg
 from cfg.offline import *
@@ -54,17 +54,27 @@ if camera_motion not in ('free_fall', 'static'):
     raise ValueError('CAMERA_MOTION must be free_fall or static')
 camera_class = StaticCamera if camera_motion == 'static' else FreeFallCamera
 camera = camera_class(cam_pos_init, (vx, vy, vz), (fwd, right, up), start_t)
-loop_period = float(getattr(cfg, 'DISK_LOOP_PERIOD', 0.0))
+loop_period = float(cfg.DISK_LOOP_PERIOD)
 loop_reference_time = float(getattr(cfg, 'DISK_LOOP_REFERENCE_TIME', 20.0))
 loop_epoch = float(getattr(cfg, 'DISK_LOOP_EPOCH', 0.0))
 if not np.isfinite([loop_period, loop_reference_time, loop_epoch]).all() or loop_period < 0:
     raise ValueError('Disk loop times must be finite and period must be nonnegative (0 disables loop)')
 disk_loop = loop_period > 0
-if disk_loop and (not getattr(cfg, 'DISK_COEFFICIENTS', False) or
+disk_coefficients = bool(getattr(cfg, 'DISK_COEFFICIENTS', False))
+if disk_loop and (not disk_coefficients or
                   os.path.normpath(kernel_path) != os.path.normpath('krnls/disk.cu')):
     raise ValueError('Disk loop currently requires DISK_COEFFICIENTS=True and krnls/disk.cu')
 
 base_path = os.path.dirname(os.path.abspath(__file__))
+disk_a_path = os.path.join(base_path, prebaked_disk_path)
+if disk_loop:
+    disk_b_config = getattr(cfg, 'DISK_LOOP_TEXTURE_B', None)
+    if not disk_b_config:
+        raise ValueError('Set DISK_LOOP_TEXTURE_B to a separately baked coefficient texture')
+    disk_b_path = os.path.join(base_path, disk_b_config)
+    disk_extent = validate_disk_loop_pair(disk_a_path, disk_b_path)
+else:
+    disk_extent = disk_half_extent(disk_a_path)
 
 
 print('正在加载天空盒...')
@@ -85,20 +95,15 @@ print('  天空盒纹理就绪')
 
 
 print('正在加载预烘焙吸积盘纹理...')
-prebaked_data = load_disk_cache(os.path.join(base_path, prebaked_disk_path), getattr(cfg,'DISK_COEFFICIENTS',False))
-ishalf=not getattr(cfg,'DISK_COEFFICIENTS',False)
+prebaked_data = load_disk_cache(disk_a_path, disk_coefficients)
+ishalf = not disk_coefficients
 tex_prebaked = create_texture_array_3d(cp.asarray(prebaked_data, dtype=cp.float16 if ishalf else cp.float32),4,(0,0,1,1,1),ishalf)
 print(f"  数据 shape: {prebaked_data.shape}  dtype: {'half' if ishalf else 'float32'}")
 del prebaked_data
 print('  吸积盘 3D 纹理就绪')
 
 if disk_loop:
-    disk_b_path = getattr(cfg, 'DISK_LOOP_TEXTURE_B', None)
-    if not disk_b_path:
-        raise ValueError('Set DISK_LOOP_TEXTURE_B to a separately baked coefficient texture')
-    if disk_half_extent(os.path.join(base_path, disk_b_path)) != disk_half_extent(os.path.join(base_path, prebaked_disk_path)):
-        raise ValueError('Disk loop A/B vertical domains differ; rebake both textures')
-    prebaked_b = load_disk_cache(os.path.join(base_path, disk_b_path), coefficients=True)
+    prebaked_b = load_disk_cache(disk_b_path, coefficients=True)
     tex_prebaked_b = create_texture_array_3d(cp.asarray(prebaked_b, dtype=cp.float32),
                                            4, (0, 0, 1, 1, 1))
     del prebaked_b
@@ -118,7 +123,7 @@ print('正在编译 CUDA kernel...')
 _trace_src = os.path.join(base_path, kernel_path)
 with open(_trace_src, "r", encoding="utf-8") as f:
     cuda_source = f.read()
-compile_opts = [f'-DDISK_HALF_EXTENT={disk_half_extent(os.path.join(base_path, prebaked_disk_path))}f', '-use_fast_math', f'-I{os.path.join(base_path, "krnls")}', '-lineinfo']
+compile_opts = [f'-DDISK_HALF_EXTENT={disk_extent}f', '-use_fast_math', f'-I{os.path.join(base_path, "krnls")}', '-lineinfo']
 if USE_RK4:
     compile_opts.append('-DUSE_RK4')
 if NO_DEPTH_JITTER:
@@ -133,7 +138,7 @@ if getattr(cfg, 'ACCRE_DISK_DOPPLER_FOLLOW_BKGD', False):
     compile_opts.append('-DACCRE_DISK_DOPPLER_FOLLOW_BKGD')
 if getattr(cfg, 'OPACITY_CHANGE', False):
     compile_opts.append('-DOPACITY_CHANGE')
-if getattr(cfg,'DISK_COEFFICIENTS',False):
+if disk_coefficients:
     compile_opts.append('-DDISK_COEFFICIENTS')
 if disk_loop:
     compile_opts.append('-DDISK_LOOP')
@@ -217,7 +222,7 @@ frame_inter_tex,frame_inter_surf = create_texture_surface_union_2d(frame_interme
 del frame_intermediate_result
 current_frame_float = cp.empty((h * w * 4), dtype=cp.uint8)
 
-bloom_threshold = np.float32(7)
+bloom_threshold = np.float32(getattr(cfg, 'BLOOM_THRESHOLD', 7.0))
 
 # block_x, block_y 由 cfg/offline.py 提供
 grid_x = (w + block_x - 1) // block_x

@@ -6,21 +6,65 @@ from pathlib import Path
 import numpy as np
 
 
-def disk_half_extent(path):
-    """Physical vertical texture bound; old caches retain their 2.5M domain."""
+_COEFFICIENT_FORMAT = 'native34-coefficients-v1'
+
+
+def _read_metadata(path):
     sidecar = Path(path).with_suffix('.json')
-    metadata = json.loads(sidecar.read_text(encoding='utf-8')) if sidecar.exists() else {}
+    if not sidecar.exists():
+        return {}
+    metadata = json.loads(sidecar.read_text(encoding='utf-8'))
+    if not isinstance(metadata, dict):
+        raise ValueError(f'Expected a disk metadata object in {sidecar}')
+    return metadata
+
+
+def _half_extent(metadata):
     extent = float(metadata.get('vertical_half_extent', 2.5))
     if not np.isfinite(extent) or extent <= 0:
         raise ValueError('Disk vertical_half_extent must be positive and finite')
     return extent
 
 
+def disk_half_extent(path):
+    """Physical vertical texture bound; old caches retain their 2.5M domain."""
+    return _half_extent(_read_metadata(path))
+
+
+def validate_disk_loop_pair(path_a, path_b):
+    """Validate the metadata for two independent bakes and return their common extent."""
+    metadata_a, metadata_b = _read_metadata(path_a), _read_metadata(path_b)
+    shared_fields = ('settings', 'physics_lut_sha256', 'core_profile_sha256', 'vertical_half_extent')
+    for path, metadata in ((path_a, metadata_a), (path_b, metadata_b)):
+        message = f'Disk loop cache {path}: rebake with tools/prebake_native34.py'
+        if metadata.get('format') != _COEFFICIENT_FORMAT:
+            raise ValueError(f'{message} to generate coefficient metadata')
+        for field in (*shared_fields, 'noise_seed'):
+            if field not in metadata:
+                raise ValueError(f'{message} to record {field}')
+        if not isinstance(metadata['settings'], dict) or not metadata['settings']:
+            raise ValueError(f'{message} to record valid settings')
+        for field in ('physics_lut_sha256', 'core_profile_sha256'):
+            if not isinstance(metadata[field], str) or not metadata[field]:
+                raise ValueError(f'{message} to record a valid {field}')
+        if type(metadata['noise_seed']) is not int or metadata['noise_seed'] < 0:
+            raise ValueError(f'{message} to record a valid noise_seed')
+        try:
+            _half_extent(metadata)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f'{message} to record a valid vertical_half_extent') from error
+
+    for field in shared_fields:
+        if metadata_a[field] != metadata_b[field]:
+            raise ValueError(f'Disk loop A/B {field} differs; rebake {path_a} and {path_b} with matching inputs')
+    if metadata_a['noise_seed'] == metadata_b['noise_seed']:
+        raise ValueError(f'Disk loop A/B noise_seed must differ; rebake {path_b} with a different --seed')
+    return _half_extent(metadata_a)
+
+
 def load_disk_cache(path, coefficients=False):
     path = Path(path)
-    metadata_path = path.with_suffix('.json')
-    metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.exists() else {}
-    encoded = metadata.get('format') == 'native34-coefficients-v1'
+    encoded = _read_metadata(path).get('format') == _COEFFICIENT_FORMAT
     if encoded != bool(coefficients):
         raise ValueError('Disk cache format and DISK_COEFFICIENTS disagree; generate cache with tools/prebake_native34.py')
     result = np.load(path)
