@@ -127,6 +127,10 @@ if RAND_SAMP_DISK:
     compile_opts.append('-DRAND_SAMP_DISK')
 if NO_BKGD_DOPPLER:
     compile_opts.append('-DNO_BKGD_DOPPLER')
+if getattr(cfg, 'PHOTON_RING_OPT', False):
+    compile_opts.append('-DPHOTON_RING_OPT')
+if getattr(cfg, 'ACCRE_DISK_DOPPLER_FOLLOW_BKGD', False):
+    compile_opts.append('-DACCRE_DISK_DOPPLER_FOLLOW_BKGD')
 if getattr(cfg, 'OPACITY_CHANGE', False):
     compile_opts.append('-DOPACITY_CHANGE')
 if getattr(cfg,'DISK_COEFFICIENTS',False):
@@ -213,7 +217,7 @@ frame_inter_tex,frame_inter_surf = create_texture_surface_union_2d(frame_interme
 del frame_intermediate_result
 current_frame_float = cp.empty((h * w * 4), dtype=cp.uint8)
 
-bloom_threshold = np.float32(12)
+bloom_threshold = np.float32(7)
 
 # block_x, block_y 由 cfg/offline.py 提供
 grid_x = (w + block_x - 1) // block_x

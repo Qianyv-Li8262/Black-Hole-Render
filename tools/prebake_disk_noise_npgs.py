@@ -3,7 +3,7 @@
 """
 预烘焙吸积盘噪声纹理 (NPGS 风格噪声版本)。
 
-与 prebake_disk_noise.py 的区别:
+与早期噪声烘焙版本的区别:
   - 噪声源从 repeaterTurbulence(...) * 0.8 改为
     npgsAccretionDiskNoiseCentered(...) —— 乘性多倍频 + log 压缩 + 中心化
   - 坐标缩放改为接近 NPGS 的设计: r/z 方向大尺度, 角向小尺度

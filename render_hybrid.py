@@ -199,6 +199,10 @@ class GpuRenderer:
             compile_opts.append("-DRAND_SAMP_DISK")
         if cfg.NO_BKGD_DOPPLER:
             compile_opts.append("-DNO_BKGD_DOPPLER")
+        if getattr(cfg, "PHOTON_RING_OPT", False):
+            compile_opts.append("-DPHOTON_RING_OPT")
+        if getattr(cfg, "ACCRE_DISK_DOPPLER_FOLLOW_BKGD", False):
+            compile_opts.append("-DACCRE_DISK_DOPPLER_FOLLOW_BKGD")
         if getattr(cfg, "OPACITY_CHANGE", False):
             compile_opts.append("-DOPACITY_CHANGE")
 
@@ -422,6 +426,10 @@ class CpuRenderer:
             self.flags |= self.cpu.RenderFlag.OPACITY_CHANGE
         if not cfg.NO_BKGD_DOPPLER:
             self.flags |= self.cpu.RenderFlag.BACKGROUND_DOPPLER
+        if getattr(cfg, "PHOTON_RING_OPT", False):
+            self.flags |= self.cpu.RenderFlag.PHOTON_RING_OPTIMIZATION
+        if getattr(cfg, "ACCRE_DISK_DOPPLER_FOLLOW_BKGD", False):
+            self.flags |= self.cpu.RenderFlag.DISK_DOPPLER_FOLLOW_BACKGROUND
 
         self.postprocess = self.cpu.PostprocessParams(
             bloom_threshold=7.0,

@@ -76,6 +76,10 @@ include_dir = os.path.dirname(os.path.abspath(kernel_path))
 compile_opts = [f'-DDISK_HALF_EXTENT={disk_extent}f', '-use_fast_math',
                 f'-I{os.path.join(base_path, "krnls")}', '-lineinfo',
                 '-DNO_DEPTH_JITTER', '-DRAND_SAMP_DISK', '-DDISK_COEFFICIENTS']
+if getattr(cfg, 'PHOTON_RING_OPT', False):
+    compile_opts.append('-DPHOTON_RING_OPT')
+if getattr(cfg, 'ACCRE_DISK_DOPPLER_FOLLOW_BKGD', False):
+    compile_opts.append('-DACCRE_DISK_DOPPLER_FOLLOW_BKGD')
 if disk_loop:
     compile_opts.append('-DDISK_LOOP')
 module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))

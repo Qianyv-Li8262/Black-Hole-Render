@@ -61,6 +61,8 @@ USE_RK4           = False
 NO_DEPTH_JITTER   = True
 RAND_SAMP_DISK    = True
 NO_BKGD_DOPPLER   = False
+PHOTON_RING_OPT = False  # 缩小光子球附近的积分步长
+ACCRE_DISK_DOPPLER_FOLLOW_BKGD = False  # 吸积盘使用与背景相同的 RGB 频移方法
 OPACITY_CHANGE    = False  # 旧材质选项；DISK_COEFFICIENTS=True 时由新缓存直接提供消光
 USE_ACES          = True
 NOT_USE_S_CURVE   = False

@@ -62,6 +62,7 @@ USE_HALF_TEXTURES = True
 NO_DEPTH_JITTER = True
 RAND_SAMP_DISK = True
 NO_BKGD_DOPPLER = False
+PHOTON_RING_OPT = False
 USE_ACES = False
 NOT_USE_S_CURVE = False
 
@@ -132,6 +133,8 @@ def compile_trace_kernel(base_path: str):
         opts.append("-DRAND_SAMP_DISK")
     if NO_BKGD_DOPPLER:
         opts.append("-DNO_BKGD_DOPPLER")
+    if PHOTON_RING_OPT:
+        opts.append("-DPHOTON_RING_OPT")
 
     module = cp.RawModule(code=source, options=tuple(opts))
     return module, module.get_function("blackholekernel")
