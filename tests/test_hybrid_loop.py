@@ -67,10 +67,20 @@ class HybridLoopTests(unittest.TestCase):
                 hybrid.main()
             self.assertEqual(error.exception.code, 2)
 
+    def test_skybox_rejects_png(self):
+        sky = self.output / 'sky.png'
+        self.assertTrue(cv2.imwrite(str(sky), np.zeros((2, 4, 3), np.uint8)))
+        with self.assertRaisesRegex(ValueError, 'OpenEXR'):
+            hybrid.read_skybox_bgr(sky)
+
     @unittest.skipUnless(GPU_AVAILABLE, 'CuPy and CUDA required')
     def test_actual_gpu_renderer_closes_out_of_order_loop_frames_and_falls_back(self):
-        sky = self.output / 'sky.png'
-        cv2.imwrite(str(sky), np.zeros((2, 4, 3), np.uint8))
+        import OpenEXR
+
+        sky = self.output / 'sky.exr'
+        black = np.zeros((2, 4), np.float32)
+        with OpenEXR.File({}, {channel: black for channel in 'RGB'}) as exr:
+            exr.write(str(sky))
         lut = self.output / 'color.npy'
         np.save(lut, np.ones((2, 16, 3), np.float32))
         paths = []

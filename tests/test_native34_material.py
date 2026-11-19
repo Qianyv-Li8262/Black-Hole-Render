@@ -50,11 +50,14 @@ class CacheFormatTests(unittest.TestCase):
     def test_disk_loop_pair_checks_material_inputs_and_independent_seeds(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'temp') as directory:
             a, b = (Path(directory) / name for name in ('a.npy', 'b.npy'))
-            settings = {'resolution': [64, 128, 16], 'temperature_noise_strength': .67}
+            settings = {'resolution': [4, 8, 16], 'temperature_noise_strength': .67}
             metadata = dict(format='native34-coefficients-v1', settings=settings,
                             physics_lut_sha256='test-physics', core_profile_sha256='test-core',
                             vertical_half_extent=4., noise_seed=1)
             a.with_suffix('.json').write_text(json.dumps(metadata))
+            textures = np.zeros((4, 8, 16, 4), np.float32)
+            np.save(a, textures)
+            np.save(b, textures)
 
             def write_b(**overrides):
                 b.with_suffix('.json').write_text(json.dumps({**metadata, 'noise_seed': 2, **overrides}))
@@ -63,6 +66,13 @@ class CacheFormatTests(unittest.TestCase):
                 validate_disk_loop_pair(a, b)
             write_b(settings_sha256='different-serialization')
             self.assertEqual(validate_disk_loop_pair(a, b), 4.)
+
+            np.save(b, textures[:, :, :8])
+            with self.assertRaisesRegex(ValueError, r'b\.npy.*metadata expects'):
+                validate_disk_loop_pair(a, b)
+            with self.assertRaisesRegex(ValueError, r'b\.npy.*metadata expects'):
+                load_disk_cache(b, coefficients=True)
+            np.save(b, textures)
 
             for field, value in dict(settings={**settings, 'temperature_noise_strength': 0.},
                                      physics_lut_sha256='other-physics', core_profile_sha256='other-core',

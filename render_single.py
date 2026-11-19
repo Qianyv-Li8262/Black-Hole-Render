@@ -28,6 +28,7 @@ from cfg import offline as cfg
 from cfg.offline import *
 from helpers.render_manifest import finish_manifest, start_manifest
 from helpers.camera_motion import FreeFallCamera, StaticCamera, camera_basis
+from helpers.skybox import read_skybox_bgr
 
 
 def update_after_frame(camera, frame_args, frame_idx, d_tau):
@@ -78,10 +79,7 @@ else:
 
 
 print('正在加载天空盒...')
-img_bgr = cv2.imread(os.path.join(base_path, skybox_path),
-                     cv2.IMREAD_UNCHANGED)
-# img_bgr = cv2.imread(os.path.join(base_path, 'assets', 'black.bmp'),
-#                      cv2.IMREAD_UNCHANGED)
+img_bgr = read_skybox_bgr(os.path.join(base_path, skybox_path))
 if img_bgr is None:
     print(f"错误:无法加载天空盒!")
     exit()

@@ -9,15 +9,17 @@ loop; `render_hybrid.py` rejects `--use-cpu` while a loop is enabled.
 The disk renderers and preview tool read `DISK_LOOP_PERIOD` from `cfg/offline.py`.
 Set it explicitly to `0.0` for single-texture rendering or a positive value for
 a loop. A and B must use matching baked settings, vertical bounds, physics LUT
-and core profile, with different noise seeds. Keep both JSON sidecars with
-their textures. Interactive camera
-controls remain available; the existing time step is 0.5 coordinate M per
+and core profile, with different noise seeds. The renderer checks each array's
+dimensions against its JSON sidecar. Keep both JSON sidecars with their textures.
+Interactive camera controls remain available. The time step is 0.5 coordinate M per
 displayed frame, so a period of 40M spans 80 frames at a fixed camera.
 Its initial camera position, orientation, focal length, velocity and coordinate
 time also come from `cfg/offline.py`, along with the skybox, sky exposure and
 color LUT. The interactive preview stays 1600 pixels wide, matching the
 offline aspect ratio and physical sensor size to preserve the field of view.
 After initialization the camera remains under keyboard control.
+If the camera speed reaches the light-speed limit, the view stays black until
+you reduce or reset the velocity.
 
 For frame-parallel multi-GPU throughput, set `DISK_LOOP_PERIOD>0` and run:
 

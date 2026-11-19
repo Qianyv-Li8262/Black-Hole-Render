@@ -11,6 +11,7 @@ import cv2
 import time
 from helpers.cuda_tex import *
 from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
+from helpers.skybox import read_skybox_bgr
 import glfw
 import os, sys
 from helpers.zero_copy_window import ZeroCopyWindow
@@ -37,7 +38,7 @@ else:
     disk_extent = disk_half_extent(disk_a_path)
 
 img_file_path = os.path.join(base_path, cfg.skybox_path)
-img_bgr = cv2.imread(img_file_path, cv2.IMREAD_UNCHANGED)   
+img_bgr = read_skybox_bgr(img_file_path)
 
 if img_bgr is None:
     print(f"错误:无法在路径 {img_file_path} 找到背景图片!")
@@ -259,6 +260,9 @@ fwd, right, up = update_camera_vectors(cam_yaw, cam_pitch, cam_roll)
 
 t = float(cfg.start_t)
 vx, vy, vz = float(cfg.vx), float(cfg.vy), float(cfg.vz)
+# Leave one float32 step below 1 for the kernel's rounded sum of squares.
+beta_squared_limit = np.nextafter(np.float32(1), np.float32(0))
+velocity_rejected = False
 # 创建高效异步的主渲染流
 render_stream = cp.cuda.Stream(non_blocking=True)
 
@@ -297,37 +301,48 @@ while not window.should_close():
         cam_pitch = np.clip(cam_pitch, -np.pi/2 + 0.001, np.pi/2 - 0.001)
         fwd, right, up = update_camera_vectors(cam_yaw, cam_pitch, cam_roll)
 
-    # 1. 在流内全速启动渲染流水线
-    with render_stream:
-        # 光追写入 Surface
-        kernel_args = (
-            cp.uint64(frame_inter_surf.ptr), cp.uint64(tex_handle.ptr), cp.uint64(tex_prebaked.ptr), cp.uint64(tex_handle_color.ptr), cp.float32(t),
-            cp.float32(cam_pos[0]), cp.float32(cam_pos[1]), cp.float32(cam_pos[2]),
-            cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
-            cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
-            cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
-            cp.float32(vx), cp.float32(vy), cp.float32(vz),
-            cp.int32(w), cp.int32(h),
-            cp.float32(physwidth), cp.float32(physheight), cp.float32(focal_length), cp.float32(0.1), cp.int32(2000), cp.int32(jitnum), cp.int32(frames)
-        )
-        if disk_loop:
-            # Same ABI and retarded-time turnover as the offline renderer.
-            kernel_args = kernel_args[:-1] + (
-                cp.uint64(tex_prebaked_b.ptr), cp.float32(loop_period),
-                cp.float32(loop_reference_time), cp.float32(loop_epoch),
-            ) + kernel_args[-1:]
-        trace_rays_kernel((grid_x, grid_y), (block_x, block_y), kernel_args)
-        # Graph读取 Surface,处理Bloom,输出给线性 uint8 静态数组
-        postprocess_graph.launch(stream=render_stream)
+    speed_squared = vx*vx + vy*vy + vz*vz
+    velocity_valid = speed_squared < 1.0
+    if velocity_valid:
+        beta = np.array((vx, vy, vz), dtype=np.float32)
+        velocity_valid = np.dot(beta, beta) < beta_squared_limit
 
-    # 2. 必须同步!等待流水线走完,此时 static_output_buf 画面确立
-    render_stream.synchronize()
+    if velocity_valid:
+        # 光追写入 Surface，再执行 Bloom 后处理。
+        with render_stream:
+            kernel_args = (
+                cp.uint64(frame_inter_surf.ptr), cp.uint64(tex_handle.ptr), cp.uint64(tex_prebaked.ptr), cp.uint64(tex_handle_color.ptr), cp.float32(t),
+                cp.float32(cam_pos[0]), cp.float32(cam_pos[1]), cp.float32(cam_pos[2]),
+                cp.float32(fwd[0]), cp.float32(fwd[1]), cp.float32(fwd[2]),
+                cp.float32(right[0]), cp.float32(right[1]), cp.float32(right[2]),
+                cp.float32(up[0]), cp.float32(up[1]), cp.float32(up[2]),
+                *beta,
+                cp.int32(w), cp.int32(h),
+                cp.float32(physwidth), cp.float32(physheight), cp.float32(focal_length), cp.float32(0.1), cp.int32(2000), cp.int32(jitnum), cp.int32(frames)
+            )
+            if disk_loop:
+                # Same ABI and retarded-time turnover as the offline renderer.
+                kernel_args = kernel_args[:-1] + (
+                    cp.uint64(tex_prebaked_b.ptr), cp.float32(loop_period),
+                    cp.float32(loop_reference_time), cp.float32(loop_epoch),
+                ) + kernel_args[-1:]
+            trace_rays_kernel((grid_x, grid_y), (block_x, block_y), kernel_args)
+            postprocess_graph.launch(stream=render_stream)
+        render_stream.synchronize()
+    elif not velocity_rejected:
+        print(f'警告：相机速度超出 CUDA 光追允许的范围（β²={speed_squared:.9g}）。'
+              '画面保持全黑，请调低或重置速度。', file=sys.stderr)
+    velocity_rejected = not velocity_valid
     
     # 3. 映射 PBO,进行内存级极速复刻
     current_frame_pbo = window.map_pbo()
     
-    # PBO与输出都是扁平的 1D uint8数组,直接 1:1 零开销倾倒过去
-    current_frame_pbo[:] = static_output_buf
+    if velocity_valid:
+        current_frame_pbo[:] = static_output_buf
+    else:
+        current_frame_pbo.fill(0)
+        current_frame_pbo[3::4] = 255
+        cp.cuda.get_current_stream().synchronize()
     
     # 4. 解除映射并由 OpenGL 画在屏幕上
     window.unmap_and_draw()

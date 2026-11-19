@@ -313,23 +313,17 @@ def _camera_vectors(yaw: float, pitch: float, roll: float) -> tuple[np.ndarray, 
 
 def _load_background_rgba(path: Path, scale: float = 330.0) -> np.ndarray:
     """Load the configured skybox exactly as render_single.py does."""
+    from helpers.skybox import read_skybox_bgr
 
     try:
         import cv2
     except ModuleNotFoundError as error:
         raise RuntimeError("The CPU image test needs opencv-python (`pip install opencv-python`).") from error
 
-    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    image = read_skybox_bgr(path)
     if image is None:
         raise FileNotFoundError(f"Unable to read the configured skybox: {path}")
-    if image.ndim == 2:
-        rgba = cv2.cvtColor(image, cv2.COLOR_GRAY2RGBA)
-    elif image.shape[2] == 3:
-        rgba = cv2.cvtColor(image, cv2.COLOR_BGR2RGBA)
-    elif image.shape[2] == 4:
-        rgba = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
-    else:
-        raise ValueError(f"Unsupported skybox channel count: {image.shape}")
+    rgba = cv2.cvtColor(image, cv2.COLOR_BGR2RGBA)
     # Scale in floating point just like the GPU input, then match its upload.
     scaled = rgba.astype(np.float32) * scale
     return _as_gpu_half_texture(scaled)

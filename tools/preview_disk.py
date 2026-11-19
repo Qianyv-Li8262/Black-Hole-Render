@@ -5,7 +5,6 @@
 from pathlib import Path
 import argparse
 import math
-import os
 import runpy
 import sys
 
@@ -14,7 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--step', type=float, default=0.01)
     parser.add_argument('--jitter', type=int, choices=range(1, 65), default=8)
-    parser.add_argument('--skybox', help='Skybox path relative to repository root')
+    parser.add_argument('--skybox', help='OpenEXR skybox path relative to repository root')
     parser.add_argument('--disk', help='Prebaked disk path relative to repository root')
     parser.add_argument('--camera', type=float, nargs=3, metavar=('X', 'Y', 'Z'))
     parser.add_argument('--yaw', type=float)
@@ -56,8 +55,6 @@ def main():
 
     root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(root))
-    # Must precede importing OpenCV in the renderer.
-    os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
     from cfg import offline as cfg
     loop_period = float(cfg.DISK_LOOP_PERIOD)
     if args.loop_frames is not None and (not math.isfinite(loop_period) or loop_period <= 0):

@@ -825,46 +825,36 @@ void render_one_tile_avx2(float *raw, const Texture2D &background, const Texture
                         g = v8_abs(g);
                         g = _mm256_add_ps(_mm256_sub_ps(g, one), one);
                         g = _mm256_max_ps(g, v8(0.01f));
-                        const __m256 previous_length = v3_length(prev_pos);
-                        const __m256 uuu =
-                            _mm256_add_ps(one, _mm256_div_ps(one, _mm256_add_ps(previous_length, radius)));
                         const __m256 g2 = _mm256_mul_ps(g, g);
                         const __m256 g4 = _mm256_mul_ps(g2, g2);
                         const __m256 step_length = v3_length(v3_sub(cam_pos, prev_pos));
-                        const __m256 kzg4 = _mm256_mul_ps(v8(2.0f), disk_parameters.z);
-                        const __m256 extinction =
-                            _mm256_sub_ps(one, exp_v8(_mm256_sub_ps(zero, _mm256_mul_ps(kzg4, kzg4))));
-                        __m256 step_opacity = _mm256_mul_ps(
-                            _mm256_mul_ps(_mm256_mul_ps(disk_parameters.x, v8(1.7f)),
-                                          _mm256_mul_ps(uuu, uuu)),
-                            _mm256_div_ps(_mm256_mul_ps(step_length, extinction), g));
+                        const __m256 sample_u = _mm256_div_ps(v8(0.5f), v3_length(disk_pos));
+                        const __m256 fluid_step = _mm256_mul_ps(
+                            _mm256_mul_ps(step_length, _mm256_sub_ps(one, _mm256_mul_ps(sample_u, sample_u))),
+                            v8_abs(_mm256_sub_ps(td, _mm256_mul_ps(pd, lz))));
+                        const __m256 extinction = _mm256_max_ps(disk_parameters.x, zero);
+                        __m256 step_opacity;
+                        __m256 opacity_weight;
                         __m256 source_scale = one;
-                        if (opacity_change) {
+                        if (has_flag(params, DISK_COEFFICIENTS)) {
+                            step_opacity = _mm256_mul_ps(extinction, fluid_step);
+                            const __m256 safe = _mm256_max_ps(step_opacity, v8(1e-30f));
+                            __m256 phi = _mm256_div_ps(absorbed_fraction_v8(step_opacity), safe);
+                            phi = _mm256_blendv_ps(phi, one, _mm256_cmp_ps(step_opacity, v8(1e-30f), _CMP_LE_OQ));
+                            opacity_weight = _mm256_mul_ps(fluid_step, phi);
+                        } else if (opacity_change) {
                             const __m256 cold_fraction = v8_clamp(disk_parameters.w, 0.0f, 1.0f);
                             const __m256 opacity_scale =
                                 _mm256_add_ps(v8(0.6f), _mm256_mul_ps(v8(8.4f), cold_fraction));
-                            const __m256 u = _mm256_div_ps(one, _mm256_add_ps(previous_length, radius));
-                            const __m256 fluid_step = _mm256_mul_ps(
-                                _mm256_mul_ps(step_length, _mm256_sub_ps(one, _mm256_mul_ps(u, u))),
-                                v8_abs(_mm256_sub_ps(td, _mm256_mul_ps(pd, lz))));
-                            step_opacity = _mm256_mul_ps(
-                                _mm256_mul_ps(_mm256_max_ps(disk_parameters.x, zero), opacity_scale),
-                                fluid_step);
+                            step_opacity = _mm256_mul_ps(_mm256_mul_ps(extinction, opacity_scale), fluid_step);
+                            opacity_weight = absorbed_fraction_v8(step_opacity);
                             source_scale = _mm256_div_ps(v8(1.7f), opacity_scale);
-                        }
-                        step_opacity = _mm256_max_ps(step_opacity, zero);
-                        __m256 opacity_weight = absorbed_fraction_v8(step_opacity);
-                        if (has_flag(params, DISK_COEFFICIENTS)) {
-                            const __m256 u = _mm256_div_ps(v8(0.5f), v3_length(disk_pos));
-                            const __m256 dl = _mm256_mul_ps(_mm256_mul_ps(step_length, _mm256_sub_ps(one,_mm256_mul_ps(u,u))),v8_abs(_mm256_sub_ps(td,_mm256_mul_ps(pd,lz))));
-                            step_opacity=_mm256_mul_ps(_mm256_max_ps(disk_parameters.x,zero),dl);
-                            const __m256 t=step_opacity;
-                            const __m256 safe=_mm256_max_ps(t,v8(1e-30f));
-                            __m256 phi=_mm256_div_ps(absorbed_fraction_v8(t),safe);
-                            // absorbed_fraction is stable at small positive t; t=0 limit is 1.
-                            phi=_mm256_blendv_ps(phi,one,_mm256_cmp_ps(t,v8(1e-30f),_CMP_LE_OQ));
-                            opacity_weight=_mm256_mul_ps(dl,phi);
-                            source_scale=one;
+                        } else {
+                            const __m256 emission = _mm256_mul_ps(v8(2.0f), disk_parameters.z);
+                            const __m256 absorption = absorbed_fraction_v8(_mm256_mul_ps(emission, emission));
+                            step_opacity = _mm256_mul_ps(
+                                _mm256_mul_ps(_mm256_mul_ps(extinction, v8(1.7f)), fluid_step), absorption);
+                            opacity_weight = absorbed_fraction_v8(step_opacity);
                         }
                         float4x8 emission;
                         if (disk_doppler_follows_background) {

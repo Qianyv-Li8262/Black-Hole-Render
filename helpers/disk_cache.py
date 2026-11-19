@@ -32,7 +32,7 @@ def disk_half_extent(path):
 
 
 def validate_disk_loop_pair(path_a, path_b):
-    """Validate the metadata for two independent bakes and return their common extent."""
+    """Validate two independent bakes and return their common extent."""
     metadata_a, metadata_b = _read_metadata(path_a), _read_metadata(path_b)
     shared_fields = ('settings', 'physics_lut_sha256', 'core_profile_sha256', 'vertical_half_extent')
     for path, metadata in ((path_a, metadata_a), (path_b, metadata_b)):
@@ -42,8 +42,8 @@ def validate_disk_loop_pair(path_a, path_b):
         for field in (*shared_fields, 'noise_seed'):
             if field not in metadata:
                 raise ValueError(f'{message} to record {field}')
-        if not isinstance(metadata['settings'], dict) or not metadata['settings']:
-            raise ValueError(f'{message} to record valid settings')
+        if not isinstance(metadata['settings'], dict) or 'resolution' not in metadata['settings']:
+            raise ValueError(f'{message} to record settings.resolution')
         for field in ('physics_lut_sha256', 'core_profile_sha256'):
             if not isinstance(metadata[field], str) or not metadata[field]:
                 raise ValueError(f'{message} to record a valid {field}')
@@ -59,17 +59,33 @@ def validate_disk_loop_pair(path_a, path_b):
             raise ValueError(f'Disk loop A/B {field} differs; rebake {path_a} and {path_b} with matching inputs')
     if metadata_a['noise_seed'] == metadata_b['noise_seed']:
         raise ValueError(f'Disk loop A/B noise_seed must differ; rebake {path_b} with a different --seed')
+    # Inspect the arrays before GPU initialization without loading the texture data.
+    _load_disk_array(path_a, metadata_a, coefficients=True, mmap_mode='r')
+    _load_disk_array(path_b, metadata_b, coefficients=True, mmap_mode='r')
     return _half_extent(metadata_a)
 
 
 def load_disk_cache(path, coefficients=False):
-    path = Path(path)
-    encoded = _read_metadata(path).get('format') == _COEFFICIENT_FORMAT
+    return _load_disk_array(path, _read_metadata(path), coefficients)
+
+
+def _load_disk_array(path, metadata, coefficients, mmap_mode=None):
+    encoded = metadata.get('format') == _COEFFICIENT_FORMAT
     if encoded != bool(coefficients):
         raise ValueError('Disk cache format and DISK_COEFFICIENTS disagree; generate cache with tools/prebake_native34.py')
-    result = np.load(path)
+    result = np.load(path, mmap_mode=mmap_mode)
     if result.ndim != 4 or result.shape[-1] != 4:
-        raise ValueError('Invalid disk texture shape')
+        raise ValueError(f'Invalid disk texture shape in {path}: {result.shape}')
     if encoded and result.dtype != np.float32:
-        raise ValueError('Independent disk coefficients must be stored in float32')
+        raise ValueError(f'Independent disk coefficients in {path} must be stored in float32')
+    settings = metadata.get('settings')
+    if encoded and isinstance(settings, dict) and 'resolution' in settings:
+        resolution = settings['resolution']
+        if (not isinstance(resolution, list) or len(resolution) != 3
+                or any(type(size) is not int or size < 2 for size in resolution)):
+            raise ValueError(f'Invalid disk texture resolution in metadata for {path}')
+        expected_shape = (*resolution, 4)
+        if result.shape != expected_shape:
+            raise ValueError(f'Disk texture shape for {path} is {result.shape}, '
+                             f'but its metadata expects {expected_shape}. Rebake this texture.')
     return result

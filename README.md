@@ -10,6 +10,7 @@ render paths. The scripts stay independent and can be read or modified directly.
 
 ### Sky background
 
+The disk renderers require an RGB OpenEXR (`.exr`) skybox.
 The default renderer uses NASA SVS's **An Elsewhere Starfield**:
 
 - Source: https://svs.gsfc.nasa.gov/4856/
@@ -303,24 +304,6 @@ The repository also contains experimental cloud-volume rendering code and
 prebaking tools. These are kept for development and reference, but are **not a
 supported entry point** and are not expected to work from a fresh clone without
 additional local assets or setup.
-
-## Troubleshooting
-
-If OpenCV reports that the OpenEXR codec is disabled, enable it before launching
-the renderer.
-
-PowerShell:
-
-```powershell
-$env:OPENCV_IO_ENABLE_OPENEXR="1"
-python render_single.py
-```
-
-Linux/macOS shell:
-
-```bash
-OPENCV_IO_ENABLE_OPENEXR=1 python render_single.py
-```
 
 ## 中文快速开始
 

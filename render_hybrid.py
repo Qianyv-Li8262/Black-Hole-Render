@@ -21,6 +21,7 @@ import traceback
 import cv2
 import numpy as np
 from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
+from helpers.skybox import read_skybox_bgr
 
 try:
     import cupy as cp
@@ -107,29 +108,6 @@ class FrameScheduler:
             }
 
 
-def read_image_bgr(path: Path) -> np.ndarray | None:
-    """Load EXR through OpenEXR while retaining OpenCV BGR layout."""
-    if path.suffix.lower() != ".exr":
-        return cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-
-    import OpenEXR
-
-    with OpenEXR.File(str(path), separate_channels=True) as exr:
-        channels = exr.channels()
-        missing = [name for name in ("R", "G", "B") if name not in channels]
-        if missing:
-            raise RuntimeError(
-                f"EXR is missing RGB channels {missing}; available: {list(channels)}"
-            )
-        return np.ascontiguousarray(
-            np.stack(
-                (channels["B"].pixels, channels["G"].pixels, channels["R"].pixels),
-                axis=-1,
-            ),
-            dtype=np.float32,
-        )
-
-
 class GpuRenderer:
     """All CUDA resources owned by one GPU worker thread."""
 
@@ -156,7 +134,7 @@ class GpuRenderer:
         self.grid_y = (self.h + self.block_y - 1) // self.block_y
 
         print(f"[GPU {self.gpu_id}] Loading skybox...")
-        img_bgr = read_image_bgr(BASE_PATH / cfg.skybox_path)
+        img_bgr = read_skybox_bgr(BASE_PATH / cfg.skybox_path)
         if img_bgr is None:
             raise RuntimeError(f"Unable to load skybox: {cfg.skybox_path}")
         img_rgba = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA) * getattr(cfg, "SKYBOX_SCALE", 330.0)
@@ -401,7 +379,7 @@ class CpuRenderer:
     def _initialize(self) -> None:
         self.w, self.h = cfg.w, cfg.h
         print("[CPU] Loading textures...")
-        img_bgr = read_image_bgr(BASE_PATH / cfg.skybox_path)
+        img_bgr = read_skybox_bgr(BASE_PATH / cfg.skybox_path)
         if img_bgr is None:
             raise RuntimeError(f"Unable to load skybox: {cfg.skybox_path}")
         # Keep multiplication before float16 conversion, as in GpuRenderer.
