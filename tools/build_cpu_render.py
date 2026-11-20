@@ -55,6 +55,10 @@ def main() -> None:
         f"-I{pybind11_include}",
         f"-I{sysconfig.get_path('include')}",
     ]
+    if sys.platform != "win32":
+        # ELF shared objects need position-independent code; without it the
+        # link fails on pybind11's thread-local relocations.
+        compile_flags.append("-fPIC")
     objects: list[Path] = []
     for source in SOURCES:
         object_path = BUILD_DIR / f"{source.stem}.obj"
@@ -78,10 +82,13 @@ def main() -> None:
         subprocess.run(command, cwd=ROOT, check=True)
         objects.append(object_path)
 
+    # lld is required on Windows. Elsewhere use it when installed and fall
+    # back to the system linker otherwise.
+    linker_flags = ["-fuse-ld=lld"] if sys.platform == "win32" or shutil.which("ld.lld") else []
     command = [
         compiler,
         "-shared",
-        "-fuse-ld=lld",
+        *linker_flags,
         *(str(object_path) for object_path in objects),
         "-o",
         str(OUTPUT),

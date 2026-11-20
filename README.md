@@ -147,7 +147,8 @@ pip install pybind11
 python tools/build_cpu_render.py
 ```
 
-`clang++` and `lld` are required by the current build script.
+`clang++` is required by the current build script. `lld` is required on
+Windows; on Linux it is used when installed, otherwise the system linker is used.
 The generated `cpu_render_native*.pyd` or `.so` is stored under `build/`.
 
 The production CPU renderer requires **AVX2**. If **AVX-512F** and
