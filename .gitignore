@@ -35,3 +35,4 @@ output_frames_cpu_offline_config_test/
 *.dll
 *.pyd
 misc/
+output/

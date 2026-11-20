@@ -2,8 +2,6 @@
 # SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 import numpy as np
 import cupy as cp
-import matplotlib.pyplot as plot
-import matplotlib.image as image
 import os
 generation_source=r'''
 __device__ __forceinline__ float fract(float x) { 
