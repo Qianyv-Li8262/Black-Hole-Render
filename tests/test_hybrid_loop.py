@@ -13,7 +13,9 @@ import numpy as np
 
 try:
     import cfg.offline  # noqa: F401  (local, Git-ignored settings)
-except ModuleNotFoundError:
+except ModuleNotFoundError as exc:
+    if exc.name != 'cfg.offline':
+        raise
     # A fresh clone has no cfg/offline.py. These tests patch every setting
     # they rely on, so the tracked example is a sufficient stand-in.
     import cfg.offline_example
