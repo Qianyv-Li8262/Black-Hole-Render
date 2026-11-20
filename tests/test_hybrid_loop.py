@@ -10,6 +10,15 @@ from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
+
+try:
+    import cfg.offline  # noqa: F401  (local, Git-ignored settings)
+except ModuleNotFoundError:
+    # A fresh clone has no cfg/offline.py. These tests patch every setting
+    # they rely on, so the tracked example is a sufficient stand-in.
+    import cfg.offline_example
+    sys.modules['cfg.offline'] = cfg.offline_example
+    cfg.offline = cfg.offline_example
 import render_hybrid as hybrid
 
 ROOT = Path(__file__).resolve().parents[1]
