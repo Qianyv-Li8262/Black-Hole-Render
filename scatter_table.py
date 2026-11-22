@@ -56,6 +56,17 @@ def table_shape(grid, order):
     return (groups * 3, *grid, 4)
 
 
+def pack_sh(coeff, planes):
+    """Pack (cells, SH, RGB) coefficients into FP16 texture planes (planes, cells, 4).
+
+    Plane 3*k+c holds SH coefficients 4k..4k+3 of RGB channel c; unused slots are zero.
+    """
+    cells, count, _ = coeff.shape
+    packed = np.zeros((cells, planes // 3 * 4, 3), np.float16)
+    packed[:, :count] = coeff
+    return packed.reshape(cells, -1, 4, 3).transpose(1, 3, 0, 2).reshape(-1, cells, 4)
+
+
 def read_epoch(path):
     path = Path(path)
     info = json.loads(path.read_text(encoding="utf8"))
