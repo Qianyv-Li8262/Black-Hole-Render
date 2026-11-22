@@ -19,6 +19,11 @@ except (ImportError, RuntimeError):
     GPU_AVAILABLE = False
 
 
+def avx2_backends(native, *names):
+    """AVX2 validation backends; the portable (non-x86) build has only the scalar one."""
+    return tuple(getattr(native, name) for name in names) if native.avx2_supported() else ()
+
+
 def beam_params(velocity=0.0):
     # A negligible aperture keeps the same geometric ray under a boost along
     # the viewing axis. A grey absorber's transmission must remain unchanged.
@@ -49,7 +54,8 @@ class CpuTransferTests(unittest.TestCase):
         params = replace(params, disk_half_extent=3.5)
         wide = scalar(3, 3, *textures, params._native(), 3, 3, 1)
         self.assertLess(float(wide[..., :3].mean()), float(narrow[..., :3].mean()))
-        for backend in (native._render_new_avx2_accurate, native._render_new_avx2_full_math, native.render_new):
+        for backend in (*avx2_backends(native, '_render_new_avx2_accurate', '_render_new_avx2_full_math'),
+                        native.render_new):
             actual = backend(3, 3, *textures, params._native(), 3, 3, 1)
             np.testing.assert_allclose(actual, wide, rtol=6e-4, atol=2e-6)
 
@@ -60,8 +66,9 @@ class CpuTransferTests(unittest.TestCase):
         disk[..., 0] = 0
         disk[..., 2] = 0.04
         params = replace(beam_params(), flags=render_cpu.RenderFlag.DISK_COEFFICIENTS)
-        backends = (native._render_new_scalar_reference, native._render_new_avx2_accurate,
-                    native._render_new_avx2_full_math, native.render_new)
+        backends = (native._render_new_scalar_reference,
+                    *avx2_backends(native, '_render_new_avx2_accurate', '_render_new_avx2_full_math'),
+                    native.render_new)
         reference = backends[0](3, 3, background, disk, color, params._native(), 3, 3, 1)
         self.assertGreater(float(reference[..., :3].min()), 0)
         for backend in backends:
@@ -75,7 +82,7 @@ class CpuTransferTests(unittest.TestCase):
         native = render_cpu._native_module()
         textures = beam_textures()
         for backend in (native._render_new_scalar_reference,
-                        native._render_new_avx2_accurate, native.render_new):
+                        *avx2_backends(native, '_render_new_avx2_accurate'), native.render_new):
             with self.subTest(backend=backend.__name__):
                 at_rest = backend(3, 3, *textures, beam_params()._native(), 3, 3, 1)
                 moving = backend(3, 3, *textures, beam_params(0.6)._native(), 3, 3, 1)
@@ -216,8 +223,9 @@ class CudaTransferTests(unittest.TestCase):
             disk[..., 0] = extinction
             disk[..., 2] = .04
             params = replace(beam_params(), flags=render_cpu.RenderFlag.DISK_COEFFICIENTS | render_cpu.RenderFlag.OPACITY_CHANGE)
-            for backend in (native._render_new_scalar_reference, native._render_new_avx2_accurate,
-                            native._render_new_avx2_full_math, native.render_new):
+            for backend in (native._render_new_scalar_reference,
+                            *avx2_backends(native, '_render_new_avx2_accurate', '_render_new_avx2_full_math'),
+                            native.render_new):
                 with self.subTest(extinction=extinction, backend=backend.__name__):
                     cpu = backend(3, 3, background, disk, color, params._native(), 3, 3, 1)
                     np.testing.assert_allclose(gpu[..., :3], cpu[..., :3], rtol=6e-4, atol=2e-6)

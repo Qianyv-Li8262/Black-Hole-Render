@@ -16,12 +16,19 @@
 #include <thread>
 #include <vector>
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define BH_CPU_X86 1
 #include <immintrin.h>
+#else
+// Other architectures (e.g. Apple silicon, ARM Linux) build only the scalar backend.
+#define BH_CPU_X86 0
+#endif
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 
+#if BH_CPU_X86
 // Eight independent rays are stored structure-of-arrays style.  These helpers
 // deliberately use AVX2 intrinsics: the packet path does not depend on LLVM's
 // loop or SLP auto-vectorizers.
@@ -625,6 +632,8 @@ static void render_one_tile_mixed(float *raw, const Texture2D &background, const
         }
     }
 }
+#endif // BH_CPU_X86
+
 
 struct FloatImage {
     int width;
@@ -923,6 +932,7 @@ static int render_backend(float *raw, const Texture2D &background, const Texture
                         return;
                     tile_index = next_tile++;
                 }
+#if BH_CPU_X86
                 if (use_avx512) {
                     render_one_tile_avx512(raw, background, disk, color_lut, params, tile_width, tile_height,
                                            tile_index % tiles_x, tile_index / tiles_x);
@@ -936,6 +946,13 @@ static int render_backend(float *raw, const Texture2D &background, const Texture
                     render_one_tile_scalar(raw, background, disk, color_lut, params, tile_width, tile_height,
                                            tile_index % tiles_x, tile_index / tiles_x);
                 }
+#else
+                (void)use_avx2;
+                (void)full_avx_math;
+                (void)use_avx512;
+                render_one_tile_scalar(raw, background, disk, color_lut, params, tile_width, tile_height,
+                                       tile_index % tiles_x, tile_index / tiles_x);
+#endif
             }
         });
     }
@@ -944,9 +961,27 @@ static int render_backend(float *raw, const Texture2D &background, const Texture
     return 0;
 }
 
+#if !BH_CPU_X86
+// The packet backends are x86-only and are not compiled here.
+bool cpu_supports_avx2()
+{
+    return false;
+}
+
+bool cpu_supports_avx512()
+{
+    return false;
+}
+#endif
+
 static int render(float *raw, const Texture2D &background, const Texture3D &disk, const Texture2D &color_lut,
                   const render_params &params, int tile_width, int tile_height, int requested_workers)
 {
+#if !BH_CPU_X86
+    // Portable fallback: the scalar reference backend, multithreaded by tiles.
+    return render_backend(raw, background, disk, color_lut, params, tile_width, tile_height, requested_workers,
+                          false);
+#endif
     if (cpu_supports_avx512())
         return render_backend(raw, background, disk, color_lut, params, tile_width, tile_height, requested_workers,
                               true, true, true);

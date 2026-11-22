@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Qianyv-Li8262
 from __future__ import annotations
 
+import platform
 import time
 import unittest
 
@@ -58,6 +59,9 @@ class Avx2RendererTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.background, cls.disk, cls.color_lut = synthetic_textures()
         cls.native = render_cpu._native_module()
+        if platform.machine().lower() not in {"x86_64", "amd64", "i386", "i686", "x86"}:
+            # The portable build has no packet backends; x86 without AVX2 still fails below.
+            raise unittest.SkipTest("AVX2 packet backends are x86-only")
 
     def render_pair(self, params: render_cpu.RenderParams, width: int = 19, height: int = 11):
         native_params = params._native()

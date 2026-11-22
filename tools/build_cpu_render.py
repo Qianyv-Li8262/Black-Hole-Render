@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,10 @@ SOURCES = [
 ]
 BUILD_DIR = ROOT / "build"
 OUTPUT = BUILD_DIR / f"cpu_render_native{sysconfig.get_config_var('EXT_SUFFIX')}"
+
+
+def is_x86() -> bool:
+    return platform.machine().lower() in {"x86_64", "amd64", "i386", "i686", "x86"}
 
 
 def main() -> None:
@@ -59,11 +64,17 @@ def main() -> None:
         # ELF shared objects need position-independent code; without it the
         # link fails on pybind11's thread-local relocations.
         compile_flags.append("-fPIC")
+    # AVX2/AVX-512 packet backends exist only for x86. Elsewhere build the
+    # module with the scalar backend, which render() then uses.
+    portable = {"cpu_render_mixed.cpp", "cpu_render_scalar.cpp"}
+    sources = SOURCES if is_x86() else [source for source in SOURCES if source.name in portable]
     objects: list[Path] = []
-    for source in SOURCES:
+    for source in sources:
         object_path = BUILD_DIR / f"{source.stem}.obj"
         architecture_flags: list[str] = []
-        if source.name in {"cpu_render_mixed.cpp", "cpu_render_avx2.cpp"}:
+        if not is_x86():
+            pass
+        elif source.name in {"cpu_render_mixed.cpp", "cpu_render_avx2.cpp"}:
             architecture_flags = ["-mavx2"]
         elif source.name == "cpu_render_avx512.cpp":
             # Keep AVX-512 isolated in this object. Detection and module setup
@@ -93,6 +104,9 @@ def main() -> None:
         "-o",
         str(OUTPUT),
     ]
+    if sys.platform == "darwin":
+        # Python symbols resolve from the interpreter at import time.
+        command.extend(["-undefined", "dynamic_lookup"])
     if sys.platform == "win32":
         library_dir = Path(sysconfig.get_config_var("LIBDIR") or Path(sys.prefix) / "libs")
         python_library = library_dir / f"python{sys.version_info.major}{sys.version_info.minor}.lib"
