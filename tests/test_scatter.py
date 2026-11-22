@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from bake_scatter import latest_epoch, quadrature, reserve_epoch_file
+from bake_scatter import latest_epoch, prune_rolling_epochs, publish_epoch, quadrature, reserve_epoch_file
 from scatter_table import FORMAT, configured_table, read_epoch, table_shape
 
 
@@ -72,3 +72,37 @@ class ScatterTests(unittest.TestCase):
                 with self.assertRaises(OSError) as error:
                     reserve_epoch_file(path, 2048)
             self.assertEqual(error.exception.errno, errno.ENOSPC)
+
+    def test_rolling_cleanup_preserves_latest_and_archived_epochs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for epoch, policy in enumerate((None, "keep", "rolling", "rolling", "rolling"), 1):
+                folder = root / f"epoch_{epoch:04d}"
+                folder.mkdir()
+                (folder / "table.npy").touch()
+                (folder / "epoch.json").write_text(json.dumps(dict(format=FORMAT, epoch=epoch,
+                                                                  checkpoint_policy=policy)))
+            (root / "epoch_0004" / "notes.txt").touch()
+
+            prune_rolling_epochs(root, 5)
+            self.assertEqual(sorted(p.name for p in root.iterdir()),
+                             ["epoch_0001", "epoch_0002", "epoch_0004", "epoch_0005"])
+            self.assertTrue((root / "epoch_0004" / "table.npy").is_file())
+
+    def test_publish_retries_a_transient_windows_file_handle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp) / "staging"
+            stage.mkdir()
+            target = Path(tmp) / "epoch_0001"
+            rename = Path.rename
+            busy = PermissionError("directory is temporarily locked")
+            busy.winerror = 5
+            with patch.object(Path, "rename", autospec=True, side_effect=[busy, None]) as move:
+                with patch("bake_scatter.time.sleep"):
+                    publish_epoch(stage, target)
+                self.assertEqual(move.call_count, 2)
+            rename(stage, target)
+            with patch.object(Path, "rename", autospec=True, side_effect=busy) as move:
+                with self.assertRaises(PermissionError):
+                    publish_epoch(stage, target)
+                self.assertEqual(move.call_count, 1)

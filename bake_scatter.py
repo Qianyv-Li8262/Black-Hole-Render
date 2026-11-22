@@ -137,6 +137,19 @@ def reserve_epoch_file(path, byte_count):
                     raise
 
 
+def publish_epoch(stage, destination):
+    for attempt in range(6):
+        try:
+            stage.rename(destination)
+            return
+        except PermissionError as error:
+            # A short-lived Windows file handle can block the directory rename.
+            if (getattr(error, "winerror", None) not in (5, 32, 33)
+                    or destination.exists() or attempt == 5):
+                raise
+            time.sleep(0.05 * 2**attempt)
+
+
 def main():
     args = arguments()
     import cupy as cp
@@ -308,7 +321,7 @@ def bake(args, cp):
                           checkpoint_policy="keep" if args.keep_epochs else "rolling",
                           elapsed_seconds=time.perf_counter()-started)
             (stage / "epoch.json").write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf8")
-            stage.rename(folder)
+            publish_epoch(stage, folder)
         previous_path = folder / "epoch.json"
         print(f"Epoch {epoch}: {previous_path}  RMS={rms}  truncated rays={result['truncated_rays']}", flush=True)
         del old, prev, ptr

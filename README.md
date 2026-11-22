@@ -137,6 +137,9 @@ conda activate blackhole
 pip install glfw PyOpenGL
 ```
 
+`python render_realtime.py` starts with scattering disabled, even if the offline
+config names a table. Use `python render_realtime.py --scatter` to load that table.
+
 ### CPU accelerator on Windows or Linux HPC
 
 The hybrid renderer can assign frames to one CPU worker alongside the GPUs.
@@ -402,13 +405,14 @@ degree 5 and 256 directions per cell.
 Each GPU thread traces all directions for one cell. Adjacent threads follow the
 same local direction from neighboring azimuths. At 256 directions the default
 launch covers 16,384 cells. Use `--chunk` to adjust the number of cells per launch.
-The script writes each finished epoch as a directory containing `epoch.json`
-and `table.npy`. At the default size each saved epoch takes 1.6875 GiB of
-storage, and the solver uploads one previous-epoch table in addition to the
-disk textures and batch buffers. Budget disk space for all requested epochs.
-Each epoch is staged on the output filesystem and published as a directory
-after its table is complete. On Linux the solver reserves the table's disk
-blocks up front when the filesystem supports it.
+The solver reads one previous-epoch table and builds the next table. It stages
+the next `epoch.json` and `table.npy` on the output filesystem, publishes them
+as a directory, then removes older rolling checkpoints. At the default size
+the latest table uses 1.6875 GiB and writing its successor needs about 3.375 GiB
+for the pair. On Linux the solver reserves disk blocks up front when the
+filesystem supports it. Use `--keep-epochs` to archive every completed epoch for
+comparison. Existing archives and input checkpoints under other output paths
+are kept.
 An interrupted process may leave a hidden `.scatter-*` staging directory.
 The resume command uses published epoch directories only. Once no bake is
 running, abandoned staging directories can be removed to recover disk space.
@@ -418,8 +422,9 @@ Copy the selected directory to the rendering machine and set in `cfg/offline.py`
 SCATTER_TABLE = 'output_frames/scatter/epoch_0004/epoch.json'
 ```
 
-Single-GPU, hybrid GPU workers and realtime preview read this setting. The
-GPU keeps one table at render time. Use matching disk texture(s), color LUT and
+Single-GPU and hybrid GPU workers read this setting. Set `SCATTER_TABLE = None`
+to disable scattering. Realtime reads the setting with `--scatter`. The GPU
+keeps one table at render time. Use matching disk texture(s), color LUT and
 loop settings. The table describes a frozen world-space snapshot at `--time`
 (default `start_t`), including the A/B material mixture at that instant when
 enabled. Direct disk animation still uses the renderer's retarded times.
