@@ -29,21 +29,25 @@ def solver_revision():
     return h.hexdigest()
 
 
-def scene_settings(cfg):
+def scene_settings(cfg, *, include_disk_hashes=True):
     if not getattr(cfg, "DISK_COEFFICIENTS", False) or (ROOT / cfg.kernel_path).resolve() != ROOT / "krnls/disk.cu":
         raise ValueError("Scatter tables require the coefficient disk.cu material")
     disk = ROOT / cfg.prebaked_disk_path
     period = float(getattr(cfg, "DISK_LOOP_PERIOD", 0.0))
     if not math.isfinite(period) or period < 0:
         raise ValueError("Invalid disk loop period")
-    scene = dict(disk_sha256=digest(disk), color_sha256=digest(ROOT / cfg.color_lut_path),
+    scene = dict(color_sha256=digest(ROOT / cfg.color_lut_path),
                  vertical_half_extent=disk_half_extent(disk), loop_period=period,
                  rgb_shift=bool(getattr(cfg, "ACCRE_DISK_DOPPLER_FOLLOW_BKGD", False)))
+    if include_disk_hashes:
+        scene["disk_sha256"] = digest(disk)
     if period:
         reference, epoch = float(cfg.DISK_LOOP_REFERENCE_TIME), float(cfg.DISK_LOOP_EPOCH)
         if not math.isfinite(reference) or not math.isfinite(epoch):
             raise ValueError("Disk loop reference and epoch must be finite")
-        scene.update(disk_b_sha256=digest(ROOT / cfg.DISK_LOOP_TEXTURE_B), loop_reference=reference, loop_epoch=epoch)
+        scene.update(loop_reference=reference, loop_epoch=epoch)
+        if include_disk_hashes:
+            scene["disk_b_sha256"] = digest(ROOT / cfg.DISK_LOOP_TEXTURE_B)
     return scene
 
 
@@ -122,7 +126,11 @@ def configured_table(cfg, *, enabled=None):
     if not name:
         raise ValueError("Set SCATTER_TABLE to an epoch JSON when enabling scattering")
     info, array = read_epoch(ROOT / name)
-    if info["scene"] != scene_settings(cfg):
+    check_disk_hashes = getattr(cfg, "SCATTER_CHECK_DISK_HASHES", True)
+    baked_scene = info["scene"]
+    if not check_disk_hashes:
+        baked_scene = {key: value for key, value in baked_scene.items() if key not in {"disk_sha256", "disk_b_sha256"}}
+    if baked_scene != scene_settings(cfg, include_disk_hashes=check_disk_hashes):
         raise ValueError("Scatter table belongs to different disk, LUT, or loop settings")
     override = getattr(cfg, "SCATTER_G", None)
     if override is not None:
