@@ -155,8 +155,12 @@ python tools/build_cpu_render.py
 Windows; on Linux it is used when installed, otherwise the system linker is used.
 The generated `cpu_render_native*.pyd` or `.so` is stored under `build/`.
 
-The production CPU renderer requires **AVX2**. If **AVX-512F** and
+On x86-64 the production CPU renderer requires **AVX2**. If **AVX-512F** and
 **AVX-512DQ** are available, the AVX-512 backend is selected automatically.
+On other architectures (Apple silicon, ARM Linux) the build script compiles
+only the multithreaded scalar backend, so `render_cpu.py` and the CPU tests
+run there too; the AVX2-specific tests are skipped. Baking, A/B loops and
+scattering still need CUDA.
 
 ## Hardware
 
@@ -491,8 +495,9 @@ python render_cpu.py
 python render_realtime.py
 ```
 
-CPU 原生后端最低要求 AVX2；若处理器支持 AVX-512F 与 AVX-512DQ，会自动
-选择 AVX-512 路径。实时预览额外需要 CUDA/OpenGL interop、`glfw` 和
+x86-64 上 CPU 原生后端最低要求 AVX2；若处理器支持 AVX-512F 与 AVX-512DQ，会自动
+选择 AVX-512 路径。Apple 芯片等非 x86 平台只编译多线程标量后端，可以运行 CPU 渲染和 CPU 测试；
+烘焙、A/B 循环和散射仍需 CUDA。实时预览额外需要 CUDA/OpenGL interop、`glfw` 和
 `PyOpenGL`。
 
 仓库中的 cloud-volume 路径属于实验代码，不作为支持的 fresh-clone 入口。
