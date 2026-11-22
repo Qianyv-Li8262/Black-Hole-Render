@@ -246,6 +246,10 @@ __device__ __forceinline__ float3 rgb_three_line_frequency_shift(float3 rgb, flo
     return out;
 }
 
+#ifdef DISK_SCATTER
+#include "scatter/scatter_sh.cuh"
+#endif
+
 extern "C" __global__ void
 blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTextureObject_t prebaked_disk,
                 cudaTextureObject_t lut_color, const float time, const float cam_pos_x, const float cam_pos_y,
@@ -257,6 +261,9 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
 #ifdef DISK_LOOP
                 cudaTextureObject_t prebaked_disk_b, const float loop_period,
                 const float loop_reference_time, const float loop_epoch,
+#endif
+#ifdef DISK_SCATTER
+                const cudaTextureObject_t *scatter_tables, float scatter_g, float scatter_albedo,
 #endif
                 const int frames
 
@@ -503,7 +510,8 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                 float rot = pd * (time - t_use) / td;
 #endif
 
-                float phi_final = atan2f(temp.y, temp.x) + rot;
+                float azimuth = atan2f(temp.y, temp.x);
+                float phi_final = azimuth + rot;
                 phi_final = fast_mod2pi(phi_final);
 
                 float4 parameters = tex3D<float4>(prebaked_disk,
@@ -512,7 +520,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                                                   (r_disk - 4.9495f) / 30.0505f); // z → r_disk
 
 #ifdef DISK_LOOP
-                float phi_b = fast_mod2pi(atan2f(temp.y, temp.x) + pd * tb / td);
+                float phi_b = fast_mod2pi(azimuth + pd * tb / td);
                 float4 parameters_b = tex3D<float4>(prebaked_disk_b, phi_b * 0.15915494f,
                     (temp.z / DISK_HALF_EXTENT) / 2 + 0.5f, (r_disk - 4.9495f) / 30.0505f);
                 // Same physical bulk velocity for both pattern populations.
@@ -566,6 +574,10 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
 #endif
 
 #ifdef DISK_COEFFICIENTS
+#ifdef DISK_SCATTER
+                scatter_add(emission, scatter_tables, temp, cam_pos - prev_pos, r_disk, azimuth,
+                            td, pd, parameters.x, g4, scatter_g, scatter_albedo);
+#endif
                 float weight=bh_transfer::emission_weight(accumulated_color.w,parameters.x,fluid_step);
 #else
                 float weight = bh_transfer::segment_weight(accumulated_color.w, step_opacity);

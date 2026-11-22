@@ -5,17 +5,27 @@ This script is only for finding a good position to make pictures.
 I don't know the way to do temporal antialiasing(I'm a noob!)when the disk is moving so I give up real-time rendering and turned to offline rendering.
 '''
 
+import argparse
+
+parser = argparse.ArgumentParser(description='Real-time CUDA/OpenGL black hole preview')
+parser.add_argument('--scatter', action='store_true', help='Load SCATTER_TABLE from cfg/offline.py')
+args = parser.parse_args()
+
 import numpy as np
 import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
+from scatter_table import configured_table
 from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 from helpers.skybox import read_skybox_bgr
 import glfw
 import os, sys
 from helpers.zero_copy_window import ZeroCopyWindow
 from cfg import offline as cfg
+
+if args.scatter and not getattr(cfg, 'SCATTER_TABLE', None):
+    parser.error('--scatter requires SCATTER_TABLE in cfg/offline.py')
 
 base_path = os.path.dirname(os.path.abspath(__file__))
 disk_a_path = os.path.join(base_path, cfg.prebaked_disk_path)
@@ -94,6 +104,9 @@ if getattr(cfg, 'ACCRE_DISK_DOPPLER_FOLLOW_BKGD', False):
     compile_opts.append('-DACCRE_DISK_DOPPLER_FOLLOW_BKGD')
 if disk_loop:
     compile_opts.append('-DDISK_LOOP')
+scatter_table = configured_table(cfg) if args.scatter else None
+if scatter_table:
+    compile_opts.extend(scatter_table.options)
 module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))
 trace_rays_kernel = module.get_function("blackholekernel")
 
@@ -325,6 +338,8 @@ while not window.should_close():
                     cp.uint64(tex_prebaked_b.ptr), cp.float32(loop_period),
                     cp.float32(loop_reference_time), cp.float32(loop_epoch),
                 ) + kernel_args[-1:]
+            if scatter_table:
+                kernel_args = kernel_args[:-1] + scatter_table.args + kernel_args[-1:]
             trace_rays_kernel((grid_x, grid_y), (block_x, block_y), kernel_args)
             postprocess_graph.launch(stream=render_stream)
         render_stream.synchronize()

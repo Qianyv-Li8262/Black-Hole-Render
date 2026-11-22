@@ -75,7 +75,7 @@ A/B 模式用光线传播时间推算吸积盘的发光时刻，在每个盘内�
 
 ### 局限与改进
 
-- 黑洞采用非旋转的 Schwarzschild 模型。吸积盘用预烘焙的程序化发光和消光材质，尚未模拟流体演化或散射。A/B 循环服务于动画展示。
+- 黑洞采用非旋转的 Schwarzschild 模型。吸积盘使用预烘焙的程序化发光和消光材质，可选固定时刻的 HG 散射表。A/B 循环驱动材质动画，流体演化仍未模拟。
 - 烘焙和 A/B 渲染需要 CUDA。闭合示例使用静止相机，CPU 路径支持单纹理渲染。本机编译通过了 AVX-512 路径，实际运行验证覆盖 AVX2 和 CUDA。
 - 进一步评估可用固定机位分别改变积分步长、每像素采样数和纹理分辨率，记录耗时与输出差异。AVX-512 的运行验证需要支持该指令集的机器。
 
@@ -378,6 +378,72 @@ CUDA sources are under `krnls/`, sky/background textures are under `assets/`,
 and LUT or prebaked NumPy arrays are under `cache/`. Rendered frames, profiling
 reports, `archive/`, and `failed/` remain local data ignored by Git. Paths in
 `cfg/offline.py` are relative to the repository root.
+
+## Offline cloud scattering
+
+Set up the coefficient material and `cfg/offline.py` as above. The bake needs
+the disk `.npy` file(s), their `.json` sidecars, the color LUT, and a working
+CuPy/CUDA environment. The skybox and the CPU extension are only needed by
+rendering paths that use them.
+
+```bash
+python bake_scatter.py --grid 32 8 64 --epochs 2 --maxstep 8000 --output output_frames/scatter_smoke --resume-latest
+python bake_scatter.py --epochs 4 --maxstep 8000 --g 0.8 --albedo 0.8 --output output_frames/scatter --resume-latest
+```
+
+Repeat the full-size command after an interruption. `--resume-latest` checks
+the last published epoch in the output directory. Keep the inputs and solver
+options fixed and increase `--epochs` to extend the same bake. To continue
+from a specific checkpoint or a checkpoint in another directory, pass
+`--resume PATH/epoch.json` instead.
+
+The default grid is 512 radial × 32 vertical × 512 azimuthal cells, maximum SH
+degree 5 and 256 directions per cell.
+Each GPU thread traces all directions for one cell. Adjacent threads follow the
+same local direction from neighboring azimuths. At 256 directions the default
+launch covers 16,384 cells. Use `--chunk` to adjust the number of cells per launch.
+The script writes each finished epoch as a directory containing `epoch.json`
+and `table.npy`. At the default size each saved epoch takes 1.6875 GiB of
+storage, and the solver uploads one previous-epoch table in addition to the
+disk textures and batch buffers. Budget disk space for all requested epochs.
+Each epoch is staged on the output filesystem and published as a directory
+after its table is complete. On Linux the solver reserves the table's disk
+blocks up front when the filesystem supports it.
+An interrupted process may leave a hidden `.scatter-*` staging directory.
+The resume command uses published epoch directories only. Once no bake is
+running, abandoned staging directories can be removed to recover disk space.
+Copy the selected directory to the rendering machine and set in `cfg/offline.py`:
+
+```python
+SCATTER_TABLE = 'output_frames/scatter/epoch_0004/epoch.json'
+```
+
+Single-GPU, hybrid GPU workers and realtime preview read this setting. The
+GPU keeps one table at render time. Use matching disk texture(s), color LUT and
+loop settings. The table describes a frozen world-space snapshot at `--time`
+(default `start_t`), including the A/B material mixture at that instant when
+enabled. Direct disk animation still uses the renderer's retarded times.
+A moving camera samples the frozen lighting from its new direction. Scattering
+transports linear RGB with grey bolometric frequency gain; scattered light uses
+the emitting fluid frame and keeps its RGB chromaticity between events.
+
+Each probe traces disk emission plus the previous complete epoch using midpoint
+volume samples and the configured RK method. The incident directions are future
+photon directions in the comoving radial/azimuthal/vertical basis. Each
+normalized Henyey–Greenstein convolution multiplies SH band `l` by `g**l`
+(positive `g` is forward scattering). Set `SCATTER_G` to preview another phase
+on epoch 1. Subsequent epochs depend on the earlier phase and albedo; resume from
+epoch 1 with the new parameters and a separate output directory to recompute them.
+Scattering reuses a fraction of the existing extinction and the full-resolution
+disk density. Truncated SH reconstruction clamps negative scattered radiance
+to zero. The sky contributes direct background light only.
+
+The JSON records the input hashes, scene time, grid, solver options, phase,
+epoch, elapsed time, ray count, and rays that reached `maxstep`. Increase the
+step budget if many rays truncate. `relative_scatter_rms` compares the current
+and preceding quantized, phase-weighted SH coefficients with volume and squared
+scattering-coefficient weights, before the per-direction clamp. Increase angular
+resolution independently to check quadrature error.
 
 ## Experimental paths
 

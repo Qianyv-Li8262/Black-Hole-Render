@@ -79,3 +79,7 @@ DISK_LOOP_REFERENCE_TIME = 20.0
 DISK_LOOP_EPOCH = 0.0  # A 在发光时刻 epoch 达到最大权重；B 错开半周期
 DISK_LOOP_TEXTURE_B = 'cache/disk_native34_b.npy'
 CAMERA_MOTION = 'free_fall'  # 壁纸改为 static，并设置 vx=vy=vz=0
+
+# GPU disk renderer: point to an epoch JSON from python bake_scatter.py.
+SCATTER_TABLE = None
+SCATTER_G = None  # 可覆盖第一轮的 HG g；后续轮次使用烘焙值。

@@ -22,6 +22,7 @@ import cupy as cp
 import cv2
 import time
 from helpers.cuda_tex import *
+from scatter_table import configured_table
 from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 import os, sys, gc, json
 from cfg import offline as cfg
@@ -143,6 +144,9 @@ if disk_loop:
     # The same spatial/sample paths at every phase ensure numerical closure.
     if '-DNO_DEPTH_JITTER' not in compile_opts:
         compile_opts.append('-DNO_DEPTH_JITTER')
+scatter_table = configured_table(cfg)
+if scatter_table:
+    compile_opts.extend(scatter_table.options)
 module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))
 trace_rays_kernel = module.get_function("blackholekernel")
 
@@ -246,6 +250,9 @@ if disk_loop:
     # Insert before frames, preserving existing camera argument indices and [-1].
     kernel_args = kernel_args[:-1] + (cp.uint64(tex_prebaked_b.ptr), cp.float32(loop_period),
                                      cp.float32(loop_reference_time), cp.float32(loop_epoch)) + kernel_args[-1:]
+
+if scatter_table:
+    kernel_args = kernel_args[:-1] + scatter_table.args + kernel_args[-1:]
 
 bright_buf = cp.zeros((h,w,4), dtype=cp.float32)
 bright_buf_tex,bright_buf_surf = create_texture_surface_union_2d(bright_buf,4,(1,1,0,1))

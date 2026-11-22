@@ -20,6 +20,7 @@ import traceback
 
 import cv2
 import numpy as np
+from scatter_table import configured_table
 from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 from helpers.skybox import read_skybox_bgr
 
@@ -192,6 +193,9 @@ class GpuRenderer:
             compile_opts.append("-DDISK_COEFFICIENTS")
         if self.disk_loop:
             compile_opts.append('-DDISK_LOOP')
+        self.scatter_table = configured_table(cfg)
+        if self.scatter_table:
+            compile_opts.extend(self.scatter_table.options)
         trace_module = cp.RawModule(code=trace_source, options=tuple(compile_opts))
         self.trace_rays_kernel = trace_module.get_function("blackholekernel")
 
@@ -270,6 +274,8 @@ class GpuRenderer:
                 cp.uint64(self.disk_b_tex.ptr), cp.float32(self.loop_period),
                 cp.float32(self.loop_reference_time), cp.float32(self.loop_epoch),
             ) + self.static_kernel_args[-1:]
+        if self.scatter_table:
+            self.static_kernel_args = self.static_kernel_args[:-1] + self.scatter_table.args + self.static_kernel_args[-1:]
         self.render_stream = cp.cuda.Stream(non_blocking=True)
 
     @staticmethod
@@ -534,6 +540,8 @@ def main() -> int:
         loop_period, loop_reference_time, loop_epoch = disk_loop_settings()
     except ValueError as error:
         parser.error(str(error))
+    if getattr(cfg, 'SCATTER_TABLE', None) and args.use_cpu:
+        parser.error('Scatter tables require GPU workers')
     if loop_period > 0 and args.use_cpu:
         parser.error('A/B disk loops support GPU workers only; omit --use-cpu')
 
