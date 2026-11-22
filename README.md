@@ -138,7 +138,8 @@ pip install glfw PyOpenGL
 ```
 
 `python render_realtime.py` starts with scattering disabled, even if the offline
-config names a table. Use `python render_realtime.py --scatter` to load that table.
+config enables it. Use `python render_realtime.py --scatter` to load the
+configured table independently of the offline switch.
 
 ### CPU accelerator on Windows or Linux HPC
 
@@ -419,11 +420,12 @@ running, abandoned staging directories can be removed to recover disk space.
 Copy the selected directory to the rendering machine and set in `cfg/offline.py`:
 
 ```python
+OPEN_SCATTER = True
 SCATTER_TABLE = 'output_frames/scatter/epoch_0004/epoch.json'
 ```
 
-Single-GPU and hybrid GPU workers read this setting. Set `SCATTER_TABLE = None`
-to disable scattering. Realtime reads the setting with `--scatter`. The GPU
+Single-GPU and hybrid GPU workers use `OPEN_SCATTER`. Set it to `False` to
+disable scattering while keeping the path. Realtime uses `--scatter`. The GPU
 keeps one table at render time. Use matching disk texture(s), color LUT and
 loop settings. The table describes a frozen world-space snapshot at `--time`
 (default `start_t`), including the A/B material mixture at that instant when

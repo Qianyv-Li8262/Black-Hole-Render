@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -43,6 +44,21 @@ class ScatterTests(unittest.TestCase):
             np.save(root / "table.npy", np.zeros((2, 3), np.float16))
             with self.assertRaisesRegex(ValueError, "shape"):
                 read_epoch(path)
+
+    def test_switch_keeps_the_path_for_offline_and_realtime(self):
+        cfg = SimpleNamespace(OPEN_SCATTER=False, SCATTER_TABLE="configured/epoch.json")
+        with patch("scatter_table.read_epoch", return_value=({"scene": {}}, object())) as read:
+            with patch("scatter_table.scene_settings", return_value={}), patch("scatter_table.ScatterTable") as upload:
+                self.assertIsNone(configured_table(cfg))
+                read.assert_not_called()
+                self.assertIs(configured_table(cfg, enabled=True), upload.return_value)
+                cfg.OPEN_SCATTER = True
+                self.assertIsNone(configured_table(cfg, enabled=False))
+                self.assertEqual(read.call_count, 1)
+                self.assertIs(configured_table(cfg), upload.return_value)
+        cfg.SCATTER_TABLE = None
+        with self.assertRaisesRegex(ValueError, "Set SCATTER_TABLE"):
+            configured_table(cfg)
 
     def test_latest_epoch_ignores_staging_and_checks_published_epoch_number(self):
         with tempfile.TemporaryDirectory() as tmp:

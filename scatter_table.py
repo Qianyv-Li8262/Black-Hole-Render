@@ -97,10 +97,19 @@ class ScatterTable:
         self.args = (self.handles, np.float32(info["g"]), np.float32(info["albedo"]))
 
 
-def configured_table(cfg):
+def scatter_enabled(cfg):
+    # Configs written before OPEN_SCATTER used the table path as the switch.
+    return bool(getattr(cfg, "OPEN_SCATTER", getattr(cfg, "SCATTER_TABLE", None)))
+
+
+def configured_table(cfg, *, enabled=None):
+    if enabled is None:
+        enabled = scatter_enabled(cfg)
+    if not enabled:
+        return None
     name = getattr(cfg, "SCATTER_TABLE", None)
     if not name:
-        return None
+        raise ValueError("Set SCATTER_TABLE to an epoch JSON when enabling scattering")
     info, array = read_epoch(ROOT / name)
     if info["scene"] != scene_settings(cfg):
         raise ValueError("Scatter table belongs to different disk, LUT, or loop settings")

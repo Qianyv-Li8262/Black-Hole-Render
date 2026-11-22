@@ -343,7 +343,8 @@ def run_full_resolution_low_ssaa_test() -> Path:
     except ModuleNotFoundError as error:
         raise RuntimeError("The CPU image test needs opencv-python (`pip install opencv-python`).") from error
     from cfg import offline as config
-    if getattr(config, "SCATTER_TABLE", None):
+    from scatter_table import scatter_enabled
+    if scatter_enabled(config):
         raise ValueError("Scatter tables require a GPU disk renderer")
     loop_period = float(config.DISK_LOOP_PERIOD)
     if not np.isfinite(loop_period) or loop_period < 0:

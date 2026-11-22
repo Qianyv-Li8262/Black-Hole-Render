@@ -104,7 +104,7 @@ if getattr(cfg, 'ACCRE_DISK_DOPPLER_FOLLOW_BKGD', False):
     compile_opts.append('-DACCRE_DISK_DOPPLER_FOLLOW_BKGD')
 if disk_loop:
     compile_opts.append('-DDISK_LOOP')
-scatter_table = configured_table(cfg) if args.scatter else None
+scatter_table = configured_table(cfg, enabled=args.scatter)
 if scatter_table:
     compile_opts.extend(scatter_table.options)
 module = cp.RawModule(code=cuda_source, options=tuple(compile_opts))

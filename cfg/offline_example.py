@@ -80,6 +80,7 @@ DISK_LOOP_EPOCH = 0.0  # A 在发光时刻 epoch 达到最大权重；B 错开�
 DISK_LOOP_TEXTURE_B = 'cache/disk_native34_b.npy'
 CAMERA_MOTION = 'free_fall'  # 壁纸改为 static，并设置 vx=vy=vz=0
 
-# Offline GPU renderers load this epoch JSON. Realtime also requires --scatter.
+# Offline GPU scattering. Keep the path when toggling OPEN_SCATTER.
+OPEN_SCATTER = False
 SCATTER_TABLE = None
 SCATTER_G = None  # 可覆盖第一轮的 HG g；后续轮次使用烘焙值。

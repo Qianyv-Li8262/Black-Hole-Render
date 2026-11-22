@@ -20,7 +20,7 @@ import traceback
 
 import cv2
 import numpy as np
-from scatter_table import configured_table
+from scatter_table import configured_table, scatter_enabled
 from helpers.disk_cache import load_disk_cache, disk_half_extent, validate_disk_loop_pair
 from helpers.skybox import read_skybox_bgr
 
@@ -540,7 +540,7 @@ def main() -> int:
         loop_period, loop_reference_time, loop_epoch = disk_loop_settings()
     except ValueError as error:
         parser.error(str(error))
-    if getattr(cfg, 'SCATTER_TABLE', None) and args.use_cpu:
+    if args.use_cpu and scatter_enabled(cfg):
         parser.error('Scatter tables require GPU workers')
     if loop_period > 0 and args.use_cpu:
         parser.error('A/B disk loops support GPU workers only; omit --use-cpu')
