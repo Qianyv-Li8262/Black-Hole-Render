@@ -16,7 +16,7 @@ import time
 import numpy as np
 
 from helpers.disk_cache import load_disk_cache, validate_disk_loop_pair
-from scatter_table import FORMAT, ROOT, ScatterTable, read_epoch, scene_settings, solver_revision, table_shape
+from scatter_table import FORMAT, ROOT, ScatterTable, pack_sh, read_epoch, scene_settings, solver_revision, table_shape
 
 
 # Both kernels trace and store the same rays. Only the assignment to threads changed.
@@ -298,15 +298,12 @@ def bake(args, cp):
                     if not np.isfinite(coeff).all() or np.max(np.abs(coeff)) > 65504:
                         raise FloatingPointError(f"Unrepresentable SH coefficient at cell batch {start}")
                     # Compute RMS on the quantized table actually consumed by the next epoch.
-                    packed = np.zeros((cells, shape[0]//3*4, 3), np.float16)
-                    packed[:, :count] = coeff
-                    tile = packed.reshape(cells, -1, 4, 3).transpose(1, 3, 0, 2).reshape(-1, cells, 4)
-                    planes[:, start:start+cells] = tile
+                    planes[:, start:start+cells] = pack_sh(coeff, shape[0])
                     vol = host[ncoeff:].astype(np.float64)
                     if not np.isfinite(vol).all():
                         raise FloatingPointError("Invalid scattering optical weight")
                     weighted = vol[:, None, None] * phase_squared[None, :, None]
-                    current = packed[:, :count].astype(np.float32)
+                    current = coeff.astype(np.float16).astype(np.float32)
                     total2 += np.sum(weighted * current**2)
                     if prev is not None:
                         prior = prev[:, start:start+cells].reshape(-1, 3, cells, 4)
