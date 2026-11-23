@@ -10,7 +10,10 @@ import numpy as np
 from helpers.disk_cache import disk_half_extent
 
 ROOT = Path(__file__).resolve().parent
-FORMAT = "disk-scatter-incoming-sh-v1"
+FORMAT = "disk-scatter-thomson-sh-v1"
+PHASE = "thomson"
+# Matches scatter_basis and scatter_lookup in krnls/scatter/scatter_sh.cuh.
+THOMSON_MOMENTS = (1.0, 0.1, 0.1, 0.1, 0.1, 0.1)
 
 
 def digest(path):
@@ -51,12 +54,10 @@ def scene_settings(cfg, *, include_disk_hashes=True):
     return scene
 
 
-def table_shape(grid, order):
-    if type(order) is not int or not 0 <= order <= 8:
-        raise ValueError("SH order must be an integer in [0, 8]")
+def table_shape(grid):
     if len(grid) != 3 or any(type(n) is not int or n < 2 for n in grid) or math.prod(grid) >= 2**31:
         raise ValueError("Invalid (radius, height, azimuth) scatter grid")
-    groups = ((order + 1)**2 + 3) // 4
+    groups = (len(THOMSON_MOMENTS) + 3) // 4
     return (groups * 3, *grid, 4)
 
 
@@ -74,11 +75,13 @@ def pack_sh(coeff, planes):
 def read_epoch(path):
     path = Path(path)
     info = json.loads(path.read_text(encoding="utf8"))
-    if info.get("format") != FORMAT or type(info.get("epoch")) is not int or info["epoch"] < 1:
+    if not isinstance(info, dict) or type(info.get("epoch")) is not int or info["epoch"] < 1:
         raise ValueError(f"Invalid scatter epoch in {path}")
-    if not (-1 < info["g"] < 1 and 0 <= info["albedo"] <= 1):
-        raise ValueError("Invalid HG phase or albedo")
-    shape = table_shape(info["grid"], info["order"])
+    if info.get("format") != FORMAT or info.get("phase") != PHASE or info.get("order") != 2:
+        raise ValueError(f"Expected a Thomson scatter table in {path}; bake a new table")
+    if not (0 <= info["albedo"] <= 1):
+        raise ValueError("Albedo must be in [0, 1]")
+    shape = table_shape(info["grid"])
     array = np.load(path.with_name("table.npy"), mmap_mode="r", allow_pickle=False)
     if array.dtype != np.float16 or array.shape != shape or not array.flags.c_contiguous:
         raise ValueError(f"Expected a contiguous FP16 scatter table of shape {shape}")
@@ -90,8 +93,7 @@ class ScatterTable:
         import cupy as cp
         from cupy.cuda import runtime, texture
 
-        self.options = ("-DDISK_SCATTER", f"-DSCATTER_ORDER={info['order']}",
-                        f"-DSCATTER_SOURCE_ID=0x{solver_revision()[:8]}u")
+        self.options = ("-DDISK_SCATTER", f"-DSCATTER_SOURCE_ID=0x{solver_revision()[:8]}u")
         self.textures = []
         desc = texture.ChannelFormatDescriptor(16, 16, 16, 16, runtime.cudaChannelFormatKindFloat)
         sampler = texture.TextureDescriptor(
@@ -109,7 +111,7 @@ class ScatterTable:
         self.handles = cp.asarray([tex.ptr for tex in self.textures], dtype=cp.uint64)
         # Finish host uploads before dropping the memory map or using another stream.
         cp.cuda.get_current_stream().synchronize()
-        self.args = (self.handles, np.float32(info["g"]), np.float32(info["albedo"]))
+        self.args = (self.handles, np.float32(info["albedo"]))
 
 
 def scatter_enabled(cfg):
@@ -132,11 +134,4 @@ def configured_table(cfg, *, enabled=None):
         baked_scene = {key: value for key, value in baked_scene.items() if key not in {"disk_sha256", "disk_b_sha256"}}
     if baked_scene != scene_settings(cfg, include_disk_hashes=check_disk_hashes):
         raise ValueError("Scatter table belongs to different disk, LUT, or loop settings")
-    override = getattr(cfg, "SCATTER_G", None)
-    if override is not None:
-        if not -1 < override < 1:
-            raise ValueError("SCATTER_G must be in (-1, 1)")
-        if info["epoch"] > 1 and override != info["g"]:
-            raise ValueError("Changing HG g after epoch one requires rebaking subsequent epochs")
-        info = dict(info, g=float(override))
     return ScatterTable(info, array)

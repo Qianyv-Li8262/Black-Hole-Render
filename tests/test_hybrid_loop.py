@@ -73,6 +73,7 @@ class HybridLoopTests(unittest.TestCase):
     def test_cpu_worker_is_rejected_before_initialization(self):
         with patch.multiple(hybrid.cfg, DISK_LOOP_PERIOD=40., DISK_COEFFICIENTS=True,
                             kernel_path='krnls/disk.cu'), \
+                patch.object(hybrid.cfg, 'OPEN_SCATTER', False, create=True), \
                 patch.object(sys, 'argv', ['render_hybrid.py', '--use-cpu', '--cpu-cores', '1']):
             with self.assertRaises(SystemExit) as error:
                 hybrid.main()
@@ -115,7 +116,8 @@ class HybridLoopTests(unittest.TestCase):
                         RAND_SAMP_DISK=True, NO_BKGD_DOPPLER=True,
                         kernel_path='krnls/disk.cu', bloom_kernel_path='krnls/bloom.cu')
         cp = hybrid.cp
-        with patch.multiple(hybrid.cfg, **settings), cp.cuda.Device(0):
+        with patch.multiple(hybrid.cfg, **settings), \
+                patch.object(hybrid.cfg, 'OPEN_SCATTER', False, create=True), cp.cuda.Device(0):
             renderer = hybrid.GpuRenderer(0, 20., self.output)
             def render(frame):
                 renderer.render_frame(frame)

@@ -84,7 +84,7 @@ __device__ __forceinline__ float4 bake_sample(const bake_scene &scene, float3 po
 }
 
 __device__ float3 bake_integrate(float3 pos, float3 p, float receiver_energy, const bake_scene &scene,
-                                 const cudaTextureObject_t *previous, float phase_g, float albedo,
+                                 const cudaTextureObject_t *previous, float albedo,
                                  float step, int maxstep, bool &exhausted)
 {
     float lz = pos.x*p.y - pos.y*p.x;
@@ -104,7 +104,7 @@ __device__ float3 bake_integrate(float3 pos, float3 p, float receiver_energy, co
             float g = fmaxf(fabsf(receiver_energy/energy), 0.01f), g4 = g*g*g*g;
             float extinction;
             float4 emission = bake_sample(scene, mid, rho, azimuth, pd/td, g, g4, extinction);
-            scatter_add(emission, previous, mid, pos-start, rho, azimuth, td, pd, extinction, g4, phase_g, albedo);
+            scatter_add(emission, previous, mid, pos-start, rho, azimuth, td, pd, extinction, g4, albedo);
             float dl = bh_transfer::comoving_path_length(length(pos-start), 0.5f/length(mid), energy);
             float weight = bh_transfer::emission_weight(tau, extinction, dl);
             rgb = fma_3s3(make_float3(emission.x, emission.y, emission.z), weight, rgb);

@@ -16,14 +16,8 @@ import time
 import numpy as np
 
 from helpers.disk_cache import load_disk_cache, validate_disk_loop_pair
-from scatter_table import FORMAT, ROOT, ScatterTable, pack_sh, read_epoch, scene_settings, solver_revision, table_shape
-
-
-# Both kernels trace and store the same rays. Only the assignment to threads changed.
-CELL_LOOP_REVISIONS = {
-    "dcf851faf0132c9e83a33a91ce9d9a5ffb092f70b0005e0db4061838e0980a8b",
-    "4019b8c9fca74a274f523a370d44fc278eb0d8834063a1825c9ae3d92e70f796",
-}
+from scatter_table import (FORMAT, PHASE, ROOT, THOMSON_MOMENTS, ScatterTable, pack_sh,
+                           read_epoch, scene_settings, solver_revision, table_shape)
 
 
 def quadrature(count, order):
@@ -46,19 +40,17 @@ def quadrature(count, order):
 
 
 def arguments():
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     p.add_argument("--grid", nargs=3, type=int, default=[512, 32, 512], metavar=("R", "Z", "PHI"))
-    p.add_argument("--order", type=int, default=5)
     p.add_argument("--directions", type=int, default=256)
-    p.add_argument("--g", type=float, default=0.8, help="HG mean scattering cosine, -1 < g < 1")
-    p.add_argument("--albedo", type=float, default=0.8)
+    p.add_argument("--albedo", type=float, default=0.8, help="Scattering fraction of extinction in [0, 1] (default 0.8)")
     p.add_argument("--epochs", type=int, default=1, help="Last cumulative epoch number to write")
     p.add_argument("--keep-epochs", action="store_true", help="Keep every completed epoch instead of rolling checkpoints")
     p.add_argument("--chunk", type=int, help="Cells per launch (default up to 16384 cells and 4M rays)")
     p.add_argument("--time", type=float, help="Frozen coordinate time (default cfg.start_t)")
     p.add_argument("--step", type=float, help="Base RK step (default cfg.step)")
     p.add_argument("--maxstep", type=int, help="Ray integration budget (default cfg.maxstep)")
-    p.add_argument("--output", type=Path, default=ROOT / "output_frames/scatter")
+    p.add_argument("--output", type=Path, default=ROOT / "output_frames/scatter_thomson")
     resume = p.add_mutually_exclusive_group()
     resume.add_argument("--resume", type=Path, help="Completed epoch JSON with matching settings")
     resume.add_argument("--resume-latest", action="store_true", help="Continue the latest epoch in --output, or start if empty")
@@ -69,8 +61,8 @@ def arguments():
         args.chunk = min(16384, max(1, (4 << 20) // args.directions))
     if args.chunk < 1 or args.epochs < 1 or args.chunk*args.directions >= 2**31:
         p.error("Invalid directions, chunk size or epoch count")
-    if not (-1 < args.g < 1 and 0 <= args.albedo <= 1):
-        p.error("Require -1 < g < 1 and 0 <= albedo <= 1")
+    if not (0 <= args.albedo <= 1):
+        p.error("--albedo must be in [0, 1]")
     return args
 
 
@@ -178,8 +170,8 @@ def main():
 
 
 def bake(args, cp):
-    shape = table_shape(args.grid, args.order)
-    q = quadrature(args.directions, args.order)
+    shape = table_shape(args.grid)
+    q = quadrature(args.directions, 2)
     from cfg import offline as cfg
     from helpers.cuda_tex import create_texture_array_2d, create_texture_array_3d
     scene = scene_settings(cfg)
@@ -190,21 +182,19 @@ def bake(args, cp):
         raise ValueError("Invalid snapshot time, step, or integration budget")
     revision = solver_revision()
     options = [f"-DSCATTER_SOURCE_ID=0x{revision[:8]}u", "-DDISK_SCATTER", "-DDISK_COEFFICIENTS", "-DNO_DEPTH_JITTER",
-               f"-DSCATTER_ORDER={args.order}", f"-DDISK_HALF_EXTENT={scene['vertical_half_extent']}f",
-               f"-I{ROOT / 'krnls'}", "-use_fast_math"]
+               f"-DDISK_HALF_EXTENT={scene['vertical_half_extent']}f", f"-I{ROOT / 'krnls'}", "-use_fast_math"]
     for flag in ("USE_RK4", "PHOTON_RING_OPT", "ACCRE_DISK_DOPPLER_FOLLOW_BKGD"):
         if getattr(cfg, flag, False):
             options.append("-D" + flag)
-    settings = dict(format=FORMAT, solver_revision=revision, scene=scene, grid=args.grid, order=args.order, directions=args.directions,
-                    g=args.g, albedo=args.albedo, time=float(instant), step=float(step), maxstep=int(maxstep),
+    settings = dict(format=FORMAT, solver_revision=revision, scene=scene, grid=args.grid, order=2, directions=args.directions,
+                    phase=PHASE, albedo=args.albedo, time=float(instant), step=float(step), maxstep=int(maxstep),
                     rk4=bool(getattr(cfg, "USE_RK4", False)), photon_ring=bool(getattr(cfg, "PHOTON_RING_OPT", False)))
     first = 1
     previous_path = latest_epoch(args.output) if args.resume_latest else args.resume
     if previous_path:
         meta = epoch_info(previous_path)
-        changeable = {"g", "albedo"} if meta["epoch"] == 1 and not args.resume_latest else set()
-        if revision in CELL_LOOP_REVISIONS and meta.get("solver_revision") in CELL_LOOP_REVISIONS:
-            changeable.add("solver_revision")
+        # First epoch contains only direct incident light and can seed another albedo.
+        changeable = {"albedo"} if meta["epoch"] == 1 and not args.resume_latest else set()
         if any(meta.get(k) != v for k, v in settings.items() if k not in changeable):
             raise ValueError("Resume settings differ from the supplied epoch")
         first = meta["epoch"] + 1
@@ -248,11 +238,10 @@ def bake(args, cp):
     nr, nz, nphi = args.grid
     phi = (np.arange(nphi) + 0.5) * (2*np.pi/nphi)
     azimuths = cp.asarray(np.column_stack((np.cos(phi), np.sin(phi))), dtype=cp.float32)
-    count = (args.order + 1)**2
+    count = len(THOMSON_MOMENTS)
     P = cp.empty((count, len(q)), np.float32)
     project(((len(q)+127)//128,), (128,), (dirs, P, np.int32(len(q))))
-    bands = np.floor(np.sqrt(np.arange(count))).astype(int)
-    phase_squared = (args.g ** bands)**2
+    phase_squared = np.square(THOMSON_MOMENTS)
     size = nr*nz*nphi
     table_bytes = math.prod(shape) * np.dtype(np.float16).itemsize
     capacity = min(size, args.chunk)
@@ -291,7 +280,7 @@ def bake(args, cp):
                           (rays, dirs, azimuths, np.int32(start), np.int32(cells), np.int32(len(q)),
                            *grid_args, np.uint64(disk.ptr), np.uint64(color.ptr), np.float32(instant),
                            np.float32(step), np.int32(maxstep), *loop_args, ptr,
-                           np.float32(args.g), np.float32(args.albedo), weights, truncated))
+                           np.float32(args.albedo), weights, truncated))
                     cp.matmul(P, rays, out=sh)
                     host = batch.get()
                     coeff = host[:ncoeff].reshape(cells, count, 3)

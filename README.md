@@ -75,7 +75,7 @@ A/B 模式用光线传播时间推算吸积盘的发光时刻，在每个盘内�
 
 ### 局限与改进
 
-- 黑洞采用非旋转的 Schwarzschild 模型。吸积盘使用预烘焙的程序化发光和消光材质，可选固定时刻的 HG 散射表。A/B 循环驱动材质动画，流体演化仍未模拟。
+- 黑洞采用非旋转的 Schwarzschild 模型。吸积盘使用预烘焙的程序化发光和消光材质，可选固定时刻的未偏振 Thomson 散射表。A/B 循环驱动材质动画，流体演化仍未模拟。
 - 烘焙和 A/B 渲染需要 CUDA。闭合示例使用静止相机，CPU 路径支持单纹理渲染。本机编译通过了 AVX-512 路径，实际运行验证覆盖 AVX2 和 CUDA。
 - 进一步评估可用固定机位分别改变积分步长、每像素采样数和纹理分辨率，记录耗时与输出差异。AVX-512 的运行验证需要支持该指令集的机器。
 
@@ -395,8 +395,8 @@ CuPy/CUDA environment. The skybox and the CPU extension are only needed by
 rendering paths that use them.
 
 ```bash
-python bake_scatter.py --grid 32 8 64 --epochs 2 --maxstep 8000 --output output_frames/scatter_smoke --resume-latest
-python bake_scatter.py --epochs 4 --maxstep 8000 --g 0.8 --albedo 0.8 --output output_frames/scatter --resume-latest
+python bake_scatter.py --grid 32 8 64 --epochs 2 --maxstep 8000 --output output_frames/scatter_thomson_smoke --resume-latest
+python bake_scatter.py --epochs 4 --maxstep 8000 --albedo 0.8 --output output_frames/scatter_thomson --resume-latest
 ```
 
 Repeat the full-size command after an interruption. `--resume-latest` checks
@@ -405,15 +405,16 @@ options fixed and increase `--epochs` to extend the same bake. To continue
 from a specific checkpoint or a checkpoint in another directory, pass
 `--resume PATH/epoch.json` instead.
 
-The default grid is 512 radial × 32 vertical × 512 azimuthal cells, maximum SH
-degree 5 and 256 directions per cell.
+The default grid is 512 radial × 32 vertical × 512 azimuthal cells with 256
+directions per cell. Each cell stores the six real SH coefficients used by
+Thomson scattering, one monopole and five quadrupole coefficients per channel.
 Each GPU thread traces all directions for one cell. Adjacent threads follow the
 same local direction from neighboring azimuths. At 256 directions the default
 launch covers 16,384 cells. Use `--chunk` to adjust the number of cells per launch.
 The solver reads one previous-epoch table and builds the next table. It stages
 the next `epoch.json` and `table.npy` on the output filesystem, publishes them
 as a directory, then removes older rolling checkpoints. At the default size
-the latest table uses 1.6875 GiB and writing its successor needs about 3.375 GiB
+the latest table uses 384 MiB and writing its successor needs about 768 MiB
 for the pair. On Linux the solver reserves disk blocks up front when the
 filesystem supports it. Use `--keep-epochs` to archive every completed epoch for
 comparison. Existing archives and input checkpoints under other output paths
@@ -425,7 +426,7 @@ Copy the selected directory to the rendering machine and set in `cfg/offline.py`
 
 ```python
 OPEN_SCATTER = True
-SCATTER_TABLE = 'output_frames/scatter/epoch_0004/epoch.json'
+SCATTER_TABLE = 'output_frames/scatter_thomson/epoch_0004/epoch.json'
 ```
 
 Single-GPU and hybrid GPU workers use `OPEN_SCATTER`. Set it to `False` to
@@ -440,14 +441,17 @@ the emitting fluid frame and keeps its RGB chromaticity between events.
 
 Each probe traces disk emission plus the previous complete epoch using midpoint
 volume samples and the configured RK method. The incident directions are future
-photon directions in the comoving radial/azimuthal/vertical basis. Each
-normalized Henyey–Greenstein convolution multiplies SH band `l` by `g**l`
-(positive `g` is forward scattering). Set `SCATTER_G` to preview another phase
-on epoch 1. Subsequent epochs depend on the earlier phase and albedo; resume from
-epoch 1 with the new parameters and a separate output directory to recompute them.
-Scattering reuses a fraction of the existing extinction and the full-resolution
-disk density. Truncated SH reconstruction clamps negative scattered radiance
-to zero. The sky contributes direct background light only.
+photon directions in the comoving radial/azimuthal/vertical basis. The fixed
+unpolarized Thomson phase function is `3 * (1 + cos(theta)**2) / (16 * pi)`.
+Its SH convolution weights are 1 for the monopole and 0.1 for each quadrupole
+coefficient. Bake a new Thomson table in a separate directory when migrating
+from HG or water-droplet tables.
+
+`--albedo` is the uniform fraction of material extinction due to scattering.
+The remaining fraction goes to absorption. The default is 0.8. Changing
+albedo affects later epochs. To reuse a Thomson direct-light table, use
+`--resume path/to/epoch_0001/epoch.json` with the new albedo and a separate
+output directory. The sky contributes direct background light only.
 
 The JSON records the input hashes, scene time, grid, solver options, phase,
 epoch, elapsed time, ray count, and rays that reached `maxstep`. Increase the

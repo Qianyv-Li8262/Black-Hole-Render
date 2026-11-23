@@ -83,4 +83,3 @@ CAMERA_MOTION = 'free_fall'  # 壁纸改为 static，并设置 vx=vy=vz=0
 # Offline GPU scattering. Keep the path when toggling OPEN_SCATTER.
 OPEN_SCATTER = False
 SCATTER_TABLE = None
-SCATTER_G = None  # 可覆盖第一轮的 HG g；后续轮次使用烘焙值。

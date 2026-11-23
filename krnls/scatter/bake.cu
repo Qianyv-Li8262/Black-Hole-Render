@@ -20,7 +20,7 @@ extern "C" __global__ void bake_rays(float *rgb, const float4 *directions, const
 #ifdef DISK_LOOP
                                     cudaTextureObject_t disk_b, float time_a, float time_b, float weight_a,
 #endif
-                                    const cudaTextureObject_t *previous, float phase_g, float albedo,
+                                    const cudaTextureObject_t *previous, float albedo,
                                     float *volume_weights, unsigned long long *truncated)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -58,7 +58,7 @@ extern "C" __global__ void bake_rays(float *rgb, const float4 *directions, const
         float3 p = make_float3(cs.x*dir.x - cs.y*dir.y, cs.y*dir.x + cs.x*dir.y, dir.z) * -n;
         float energy = td - pd * (pos.x*p.y - pos.y*p.x);
         bool exhausted;
-        float3 result = bake_integrate(pos, p, energy, scene, previous, phase_g, albedo, step, maxstep, exhausted);
+        float3 result = bake_integrate(pos, p, energy, scene, previous, albedo, step, maxstep, exhausted);
         exhausted_count += exhausted;
         size_t offset = ((size_t)idx * count + d) * 3;
         rgb[offset] = result.x;

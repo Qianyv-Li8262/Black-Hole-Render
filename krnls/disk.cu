@@ -263,7 +263,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
                 const float loop_reference_time, const float loop_epoch,
 #endif
 #ifdef DISK_SCATTER
-                const cudaTextureObject_t *scatter_tables, float scatter_g, float scatter_albedo,
+                const cudaTextureObject_t *scatter_tables, float scatter_albedo,
 #endif
                 const int frames
 
@@ -576,7 +576,7 @@ blackholekernel(cudaSurfaceObject_t raw_img, cudaTextureObject_t tex_obj, cudaTe
 #ifdef DISK_COEFFICIENTS
 #ifdef DISK_SCATTER
                 scatter_add(emission, scatter_tables, temp, cam_pos - prev_pos, r_disk, azimuth,
-                            td, pd, parameters.x, g4, scatter_g, scatter_albedo);
+                            td, pd, parameters.x, g4, scatter_albedo);
 #endif
                 float weight=bh_transfer::emission_weight(accumulated_color.w,parameters.x,fluid_step);
 #else

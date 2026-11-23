@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 
 from bake_scatter import latest_epoch, prune_rolling_epochs, publish_epoch, quadrature, reserve_epoch_file
-from scatter_table import FORMAT, configured_table, read_epoch, table_shape
+from scatter_table import FORMAT, PHASE, configured_table, read_epoch, table_shape
 
 
 class ScatterTests(unittest.TestCase):
@@ -26,24 +26,31 @@ class ScatterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             quadrature(32, 5)
 
-    def test_table_layout_and_retuning(self):
+    def test_thomson_table_layout_and_albedo(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path = root / "epoch.json"
-            meta = dict(format=FORMAT, order=2, grid=[2, 3, 4], g=0.8, albedo=0.8, scene={})
-            np.save(root / "table.npy", np.zeros(table_shape(meta["grid"], meta["order"]), np.float16))
-            cfg = type("Config", (), {"SCATTER_TABLE": str(path), "SCATTER_G": 0.5})
+            meta = dict(format=FORMAT, phase=PHASE, order=2, grid=[2, 3, 4], albedo=0.2, scene={})
+            np.save(root / "table.npy", np.zeros((6, 2, 3, 4, 4), np.float16))
+            cfg = SimpleNamespace(SCATTER_TABLE=str(path))
             with patch("scatter_table.scene_settings", return_value={}), patch("scatter_table.ScatterTable") as upload:
                 path.write_text(json.dumps(dict(meta, epoch=1)))
                 configured_table(cfg)
-                self.assertEqual(upload.call_args.args[0]["g"], 0.5)
+                self.assertEqual(upload.call_args.args[0]["albedo"], 0.2)
                 upload.reset_mock()
-                path.write_text(json.dumps(dict(meta, epoch=2)))
-                with self.assertRaisesRegex(ValueError, "rebaking"):
-                    configured_table(cfg)
             np.save(root / "table.npy", np.zeros((2, 3), np.float16))
             with self.assertRaisesRegex(ValueError, "shape"):
                 read_epoch(path)
+
+    def test_legacy_and_mismatched_phase_tables_require_a_new_bake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "epoch.json"
+            for format_name, phase in (('disk-scatter-incoming-sh-v1', 'hg'),
+                                       ('disk-scatter-water-droplet-sh-v1', 'water-droplet'), (FORMAT, 'hg')):
+                with self.subTest(format=format_name, phase=phase):
+                    path.write_text(json.dumps(dict(format=format_name, phase=phase, order=2, epoch=1)))
+                    with self.assertRaisesRegex(ValueError, "Thomson.*bake a new table"):
+                        read_epoch(path)
 
     def test_switch_keeps_the_path_for_offline_and_realtime(self):
         cfg = SimpleNamespace(OPEN_SCATTER=False, SCATTER_TABLE="configured/epoch.json")
@@ -66,11 +73,11 @@ class ScatterTests(unittest.TestCase):
             (root / ".scatter-interrupted" / "epoch_0010").mkdir(parents=True)
             self.assertIsNone(latest_epoch(root))
 
-            meta = dict(format=FORMAT, order=0, grid=[2, 2, 2], g=0.8, albedo=0.8)
+            meta = dict(format=FORMAT, phase=PHASE, order=2, grid=[2, 2, 2], albedo=0.8)
             for epoch in (9, 10):
                 folder = root / f"epoch_{epoch:04d}"
                 folder.mkdir()
-                np.save(folder / "table.npy", np.zeros(table_shape(meta["grid"], meta["order"]), np.float16))
+                np.save(folder / "table.npy", np.zeros(table_shape(meta["grid"]), np.float16))
                 (folder / "epoch.json").write_text(json.dumps(dict(meta, epoch=epoch)))
 
             path = root / "epoch_0010" / "epoch.json"
